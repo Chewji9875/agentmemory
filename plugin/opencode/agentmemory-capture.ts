@@ -1,4 +1,5 @@
 import type { Plugin } from "@opencode-ai/plugin";
+import { resolveProject } from "../../src/hooks/_project";
 
 const API = process.env.AGENTMEMORY_URL || "http://localhost:3111";
 const FILE_TOOLS = new Set(["Read", "Write", "Edit", "Glob", "Grep"]);
@@ -47,19 +48,20 @@ async function observe(
   hookType: string,
   data: Record<string, unknown>,
 ): Promise<void> {
+  const currentCwd = data.cwd as string | undefined;
+  const currentProjectPath = resolveProject(currentCwd);
+
   await post("/observe", {
     hookType,
     sessionId,
-    project: projectPath,
-    cwd: projectPath,
+    project: currentProjectPath,
+    cwd: currentProjectPath,
     timestamp: new Date().toISOString(),
     data,
   });
 }
 
-let activeSessionId: string | null = null;
-let pendingConfig: Record<string, unknown> | null = null;
-let projectPath: string | null = null;
+
 const stashedFiles = new Map<string, Set<string>>();
 const seenSubtaskIds = new Map<string, Set<string>>();
 const seenToolCallIds = new Map<string, Set<string>>();
@@ -168,7 +170,7 @@ function extractErrorMessage(err: unknown): string {
 }
 
 export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
-  projectPath = ctx.worktree || ctx.project?.id || process.cwd();
+
 
   return {
     event: async ({ event }) => {
@@ -193,8 +195,8 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
           title: info?.title ?? null,
           parentID: info?.parentID ?? null,
           version: info?.version ?? null,
-          project: projectPath,
-          cwd: projectPath,
+          project: resolveProject(ctx.worktree || ctx.project?.id || process.cwd()),
+          cwd: resolveProject(ctx.worktree || ctx.project?.id || process.cwd()),
         });
         // cache the context returned at session/start so the
         // chat.system.transform hook injects it without a second fetch.
@@ -612,7 +614,7 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
         if (typeof ctx !== "string" || ctx.length === 0) {
           const result = await postJson("/context", {
             sessionId: sid,
-            project: projectPath,
+            project: resolveProject(ctx.worktree || ctx.project?.id || process.cwd()),
           });
           ctx = (result as any)?.context;
         } else {
@@ -650,7 +652,7 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
 
       const result = await postJson("/context", {
         sessionId: sid,
-        project: projectPath,
+        project: resolveProject(ctx.worktree || ctx.project?.id || process.cwd()),
       });
       const ctx = (result as any)?.context;
       if (typeof ctx === "string" && ctx.length > 0) {
