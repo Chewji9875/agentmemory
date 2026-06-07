@@ -1,5 +1,23 @@
 import type { Plugin } from "@opencode-ai/plugin";
-import { resolveProject } from "../../src/hooks/_project";
+import { execSync } from "node:child_process";
+import { basename } from "node:path";
+
+function resolveProject(cwd?: string): string {
+  const explicit = process.env["AGENTMEMORY_PROJECT_NAME"];
+  if (explicit && explicit.trim()) return explicit.trim();
+  const dir = cwd && cwd.trim() ? cwd : process.cwd();
+  try {
+    const top = execSync("git rev-parse --show-toplevel", {
+      cwd: dir,
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 500,
+    })
+      .toString()
+      .trim();
+    if (top) return basename(top);
+  } catch {}
+  return basename(dir);
+}
 
 const API = process.env.AGENTMEMORY_URL || "http://localhost:3111";
 const FILE_TOOLS = new Set(["Read", "Write", "Edit", "Glob", "Grep"]);
