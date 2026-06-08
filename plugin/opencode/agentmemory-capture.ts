@@ -1,4 +1,6 @@
 import type { Plugin } from "@opencode-ai/plugin";
+import { basename } from "node:path";
+import { execSync } from "node:child_process";
 
 const API = process.env.AGENTMEMORY_URL || "http://localhost:3111";
 const FILE_TOOLS = new Set(["Read", "Write", "Edit", "Glob", "Grep"]);
@@ -50,8 +52,8 @@ async function observe(
   await post("/observe", {
     hookType,
     sessionId,
-    project: projectPath,
-    cwd: projectPath,
+    project: projectName,
+    cwd: projectName,
     timestamp: new Date().toISOString(),
     data,
   });
@@ -59,7 +61,7 @@ async function observe(
 
 let activeSessionId: string | null = null;
 let pendingConfig: Record<string, unknown> | null = null;
-let projectPath: string | null = null;
+let projectName: string | null = null;
 const stashedFiles = new Map<string, Set<string>>();
 const seenSubtaskIds = new Map<string, Set<string>>();
 const seenToolCallIds = new Map<string, Set<string>>();
@@ -167,8 +169,48 @@ function extractErrorMessage(err: unknown): string {
   return String(err ?? "");
 }
 
+// Try each candidate directory in order, preferring git-backed names over
+// raw basenames. This avoids picking up the Desktop app directory when
+// Desktop's session.created event carries the wrong info.directory.
+function resolveProjectFromCandidates(...dirs: (string | undefined | null)[]): string {
+  // Environment variable overrides everything.
+  const explicit = process.env["AGENTMEMORY_PROJECT_NAME"];
+  if (explicit && explicit.trim()) return explicit.trim();
+
+  // First pass: return the first git-backed name.
+  // git rev-parse naturally filters out non-git directories (e.g. Desktop
+  // app bundles), so the first hit is almost certainly the user's project.
+  for (const dir of dirs) {
+    if (!dir || typeof dir !== "string" || !dir.trim()) continue;
+    try {
+      const top = execSync("git rev-parse --show-toplevel", {
+        cwd: dir.trim(),
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 500,
+      })
+        .toString()
+        .trim();
+      if (top) return basename(top);
+    } catch {}
+  }
+
+  // Second pass: return the first non-empty basename as fallback.
+  // Skip macOS .app bundles and known system paths to avoid picking up
+  // a Desktop app directory when no candidate is a git repo.
+  for (const dir of dirs) {
+    if (dir && typeof dir === "string" && dir.trim()) {
+      if (dir.includes(".app/") || dir.endsWith(".app")) continue; // macOS app bundle
+      return basename(dir.trim());
+    }
+  }
+  return "default";
+}
+
 export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
-  projectPath = ctx.worktree || ctx.project?.id || process.cwd();
+  // projectName is resolved per-session in the session.created handler below,
+  // not once at plugin init — Desktop may load the plugin before a user project
+  // is selected, giving us the wrong directory.
+  projectName = null;
 
   return {
     event: async ({ event }) => {
@@ -178,6 +220,20 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
       // ── session.created ──
       if (type === "session.created") {
         const info = props.info as Record<string, unknown> | undefined;
+
+        // Re-resolve the project name per-session, trying multiple sources in
+        // order and preferring git-backed paths. Desktop's session.created
+        // event may carry the app's own directory in info.directory rather than
+        // the user's project directory, so we also try the plugin init ctx,
+        // the worktree, and process.cwd().
+        projectName = resolveProjectFromCandidates(
+          info?.directory as string | undefined,
+          process.cwd(),
+          (ctx as any)?.project?.directory,
+          (ctx as any)?.directory,
+          ctx?.worktree,
+        );
+
         activeSessionId = (info?.id as string) || props.sessionID || null;
         if (!activeSessionId) return;
         stashedFiles.set(activeSessionId, new Set());
@@ -188,13 +244,14 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
         // and another `session.created` event during the await could
         // rebind it, causing context to be cached against the wrong key.
         const sessionId = activeSessionId;
+        
         const startResult = await postJson("/session/start", {
           sessionId,
           title: info?.title ?? null,
           parentID: info?.parentID ?? null,
           version: info?.version ?? null,
-          project: projectPath,
-          cwd: projectPath,
+          project: projectName,
+          cwd: projectName,
         });
         // cache the context returned at session/start so the
         // chat.system.transform hook injects it without a second fetch.
@@ -608,18 +665,18 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
         // prefer the context already fetched at session.created;
         // fall back to a fresh /context call if the cache missed (e.g.
         // session resumed across plugin reloads).
-        let ctx = startContextCache.get(sid);
-        if (typeof ctx !== "string" || ctx.length === 0) {
+        let ctxCached = startContextCache.get(sid);
+        if (typeof ctxCached !== "string" || ctxCached.length === 0) {
           const result = await postJson("/context", {
             sessionId: sid,
-            project: projectPath,
+            project: projectName,
           });
-          ctx = (result as any)?.context;
+          ctxCached = (result as any)?.context;
         } else {
           startContextCache.delete(sid);
         }
-        if (typeof ctx === "string" && ctx.length > 0) {
-          output.system.push(ctx);
+        if (typeof ctxCached === "string" && ctxCached.length > 0) {
+          output.system.push(ctxCached);
         }
         contextInjectedSessions.add(sid);
       }
@@ -650,12 +707,12 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
 
       const result = await postJson("/context", {
         sessionId: sid,
-        project: projectPath,
+        project: projectName,
       });
-      const ctx = (result as any)?.context;
-      if (typeof ctx === "string" && ctx.length > 0) {
+      const ctxCached = (result as any)?.context;
+      if (typeof ctxCached === "string" && ctxCached.length > 0) {
         if (Array.isArray(output.context)) {
-          output.context.push(ctx);
+          output.context.push(ctxCached);
         }
       }
     },
