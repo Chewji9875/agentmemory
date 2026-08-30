@@ -1415,6 +1415,10 @@
       if (state.activeTab === 'replay' && tab !== 'replay' && typeof stopReplayTimer === 'function') {
         stopReplayTimer();
       }
+      if (tab !== 'graph' && graphSim.raf) {
+        cancelAnimationFrame(graphSim.raf);
+        graphSim.raf = null;
+      }
       if (!opts.skipRoute) {
         updateTabRoute(tab, !!opts.replaceRoute);
       }
@@ -1432,6 +1436,13 @@
         v.classList.toggle('active', v.id === 'view-' + tab);
       });
       if (state.flagsConfig) renderFlagBanners(state.flagsConfig);
+      if (tab === 'graph') {
+        if (graphSim.running && graphSim.quietTicks <= 30) {
+          wakeGraphSim();
+        } else if (graphSim.canvas) {
+          renderGraph();
+        }
+      }
       loadTab(tab);
     }
 
@@ -1787,6 +1798,7 @@
     function startDashboardAutoRefresh() {
       if (dashboardTimer) clearInterval(dashboardTimer);
       dashboardTimer = setInterval(function() {
+        if (document.hidden) return;
         if (pollTimer) return;
         if (state.activeTab === 'dashboard') refreshDashboard();
       }, 30000);
@@ -3797,6 +3809,7 @@
       setWsStatus('polling · ' + (POLL_INTERVAL_MS / 1000) + 's', 'disconnected');
       var tick = 0;
       pollTimer = setInterval(function() {
+        if (document.hidden) return;
         tick++;
         if (state.activeTab === 'dashboard') {
           state.dashboard.loaded = false;
@@ -4507,9 +4520,13 @@
     })();
     startDashboardAutoRefresh();
 
+    var ditherInterval = null;
+    var startDitherLoop = function() {};
+    var stopDitherLoop = function() {};
+
     // Ambient background: an ordered-dither dot field that drifts very
     // slowly — the print-halftone cousin of the old static dot grid.
-    // Renders at quarter resolution and ~12fps; a single static frame
+    // Renders at quarter resolution and ~8fps; a single static frame
     // under prefers-reduced-motion.
     (function ditherField() {
       var cv = document.getElementById('bg-dither');
@@ -4554,19 +4571,48 @@
         }
       }
 
-      draw();
-      if (!reduced) {
-        setInterval(function () {
+      startDitherLoop = function() {
+        if (reduced || ditherInterval) return;
+        ditherInterval = setInterval(function () {
           t++;
           draw();
-        }, 85);
-      }
+        }, 120);
+      };
+
+      stopDitherLoop = function() {
+        if (ditherInterval) {
+          clearInterval(ditherInterval);
+          ditherInterval = null;
+        }
+      };
+
+      draw();
+      startDitherLoop();
       window.addEventListener('resize', draw);
       new MutationObserver(draw).observe(document.documentElement, {
         attributes: true,
         attributeFilter: ['data-theme']
       });
     })();
+
+    document.addEventListener('visibilitychange', function() {
+      if (document.hidden) {
+        if (graphSim.raf) {
+          cancelAnimationFrame(graphSim.raf);
+          graphSim.raf = null;
+        }
+        stopDitherLoop();
+      } else {
+        startDitherLoop();
+        if (state.activeTab === 'graph') {
+          if (graphSim.running && graphSim.quietTicks <= 30) {
+            wakeGraphSim();
+          } else if (graphSim.canvas) {
+            renderGraph();
+          }
+        }
+      }
+    });
   </script>
 </body>
 </html>
