@@ -39,6 +39,7 @@ export class OpenRouterEmbeddingProvider implements EmbeddingProvider {
       body: JSON.stringify({
         model: this.model,
         input: texts,
+        dimensions: this.dimensions,
       }),
     });
 
