@@ -13,6 +13,7 @@ import {
   COMPRESSION_SYSTEM,
   buildCompressionPrompt,
 } from "../prompts/compression.js";
+import { buildSyntheticCompression } from "./compress-synthetic.js";
 import { VISION_DESCRIPTION_PROMPT } from "../prompts/vision.js";
 import { getXmlTag, getXmlChildren } from "../prompts/xml.js";
 import { getSearchIndex, vectorIndexAddGuarded } from "./search.js";
@@ -21,7 +22,6 @@ import { validateOutput } from "../eval/validator.js";
 import { scoreCompression } from "../eval/quality.js";
 import { compressWithRetry } from "../eval/self-correct.js";
 import type { MetricsStore } from "../eval/metrics-store.js";
-import { buildSyntheticCompression } from "./compress-synthetic.js";
 import { logger } from "../logger.js";
 
 const VALID_TYPES = new Set<string>([
@@ -65,6 +65,65 @@ function parseCompressionXml(
   };
 }
 
+async function persistSyntheticObservation(
+  kv: StateKV,
+  sdk: ISdk,
+  synthetic: CompressedObservation,
+  sessionId: string,
+  observationId: string,
+  vectorKind: string,
+): Promise<void> {
+  await kv.set(KV.observations(sessionId), observationId, synthetic);
+  try {
+    getSearchIndex().add(synthetic);
+  } catch (err) {
+    logger.warn("Failed to index synthetic observation into BM25", {
+      obsId: synthetic.id,
+      sessionId: synthetic.sessionId,
+      title: synthetic.title,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+  await vectorIndexAddGuarded(
+    synthetic.id,
+    synthetic.sessionId,
+    synthetic.title + " " + (synthetic.narrative || ""),
+    { kind: vectorKind, logId: synthetic.id },
+  );
+  const streamResults = await Promise.allSettled([
+    sdk.trigger({
+      function_id: "stream::set",
+      payload: {
+        stream_name: STREAM.name,
+        group_id: STREAM.group(sessionId),
+        item_id: observationId,
+        data: { type: "compressed", observation: synthetic },
+      },
+    }),
+    sdk.trigger({
+      function_id: "stream::send",
+      payload: {
+        stream_name: STREAM.name,
+        group_id: STREAM.viewerGroup,
+        id: `compressed-${observationId}`,
+        type: "compressed_observation",
+        data: { type: "compressed", observation: synthetic, sessionId },
+      },
+      action: TriggerAction.Void(),
+    }),
+  ]);
+  for (const res of streamResults) {
+    if (res.status === "rejected") {
+      logger.warn("Non-fatal stream publish failure after compress", {
+        sessionId,
+        observationId,
+        error: res.reason instanceof Error ? res.reason.message : String(res.reason),
+      });
+    }
+  }
+}
+
+
 export function registerCompressFunction(
   sdk: ISdk,
   kv: StateKV,
@@ -90,69 +149,7 @@ export function registerCompressFunction(
           synthetic.timestamp = data.raw.timestamp;
         }
 
-        await kv.set(
-          KV.observations(data.sessionId),
-          data.observationId,
-          synthetic,
-        );
-
-        try {
-          getSearchIndex().add(synthetic);
-        } catch (err) {
-          logger.warn("Failed to index compressed observation into BM25", {
-            obsId: synthetic.id,
-            sessionId: synthetic.sessionId,
-            title: synthetic.title,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
-
-        await vectorIndexAddGuarded(
-          synthetic.id,
-          synthetic.sessionId,
-          synthetic.title + " " + (synthetic.narrative || ""),
-          { kind: "observation", logId: synthetic.id },
-        );
-
-        const streamResults = await Promise.allSettled([
-          sdk.trigger({
-            function_id: "stream::set",
-            payload: {
-              stream_name: STREAM.name,
-              group_id: STREAM.group(data.sessionId),
-              item_id: data.observationId,
-              data: { type: "compressed", observation: synthetic },
-            },
-          }),
-          sdk.trigger({
-            function_id: "stream::send",
-            payload: {
-              stream_name: STREAM.name,
-              group_id: STREAM.viewerGroup,
-              id: `compressed-${data.observationId}`,
-              type: "compressed_observation",
-              data: {
-                type: "compressed",
-                observation: synthetic,
-                sessionId: data.sessionId,
-              },
-            },
-            action: TriggerAction.Void(),
-          }),
-        ]);
-
-        for (const res of streamResults) {
-          if (res.status === "rejected") {
-            logger.warn("Non-fatal stream publish failure after compress", {
-              sessionId: data.sessionId,
-              observationId: data.observationId,
-              error:
-                res.reason instanceof Error
-                  ? res.reason.message
-                  : String(res.reason),
-            });
-          }
-        }
+        await persistSyntheticObservation(kv, sdk, synthetic, data.sessionId, data.observationId, "observation");
 
         logger.info("Observation compressed (synthetic noop fallback)", {
           obsId: data.observationId,
@@ -202,7 +199,20 @@ export function registerCompressFunction(
           : data.raw.toolOutput,
         userPrompt: data.raw.userPrompt,
         timestamp: data.raw.timestamp,
+        content: data.raw.content,
       });
+
+      if (!prompt) {
+        const synthetic = buildSyntheticCompression(data.raw);
+        await persistSyntheticObservation(kv, sdk, synthetic, data.sessionId, data.observationId, "synthetic");
+
+        return {
+          success: true,
+          skipped_llm: true,
+          observation: synthetic,
+          compressed: synthetic,
+        };
+      }
 
       try {
         const validator = (response: string) => {
