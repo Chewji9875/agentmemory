@@ -1,11 +1,8 @@
 import type { EmbeddingProvider } from "../../types.js";
 import { getEnvVar } from "../../config.js";
 import { fetchWithTimeout } from "../_fetch.js";
-import { resolveDimensions } from "./_dimensions.js";
 
 const API_URL = "https://openrouter.ai/api/v1/embeddings";
-
-const DEFAULT_MODEL = "openai/text-embedding-3-small";
 
 export class OpenRouterEmbeddingProvider implements EmbeddingProvider {
   readonly name = "openrouter";
@@ -16,12 +13,22 @@ export class OpenRouterEmbeddingProvider implements EmbeddingProvider {
   constructor(apiKey?: string) {
     this.apiKey = apiKey || getEnvVar("OPENROUTER_API_KEY") || "";
     if (!this.apiKey) throw new Error("OPENROUTER_API_KEY is required");
-    this.model = getEnvVar("OPENROUTER_EMBEDDING_MODEL") || DEFAULT_MODEL;
-    this.dimensions = resolveDimensions(
-      this.model,
-      getEnvVar("OPENROUTER_EMBEDDING_DIMENSIONS"),
-      "OPENROUTER_EMBEDDING_DIMENSIONS",
-    );
+    this.model =
+      getEnvVar("OPENROUTER_EMBEDDING_MODEL") ||
+      "openai/text-embedding-3-small";
+
+    const dimStr = getEnvVar("OPENROUTER_EMBEDDING_DIMENSIONS");
+    if (dimStr !== undefined && dimStr.trim().length > 0) {
+      const parsed = parseInt(dimStr, 10);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        throw new Error(
+          `OPENROUTER_EMBEDDING_DIMENSIONS must be a positive integer, got: ${dimStr}`,
+        );
+      }
+      this.dimensions = parsed;
+    } else {
+      this.dimensions = 1536;
+    }
   }
 
   async embed(text: string): Promise<Float32Array> {
@@ -39,6 +46,7 @@ export class OpenRouterEmbeddingProvider implements EmbeddingProvider {
       body: JSON.stringify({
         model: this.model,
         input: texts,
+        dimensions: this.dimensions,
       }),
     });
 
