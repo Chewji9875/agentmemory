@@ -462,6 +462,11 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
         } else {
           cancelPendingSummarize(sid);
         }
+        await observe(sid, "session_status", {
+          status_type: status.type,
+          attempt: status.attempt ?? null,
+          message: safeSlice(status.message, 2000),
+        });
       }
 
       // ── session.compacted ──
