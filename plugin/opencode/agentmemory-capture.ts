@@ -1,6 +1,7 @@
 import type { Plugin } from "@opencode-ai/plugin";
 import { execFileSync } from "node:child_process";
-import { basename } from "node:path";
+import { existsSync, statSync } from "node:fs";
+import { basename, dirname } from "node:path";
 
 const API = process.env.AGENTMEMORY_URL || "http://localhost:3111";
 // OpenCode reports tool names in lowercase ("read", "edit", ...); matching is
@@ -122,6 +123,50 @@ function resolveProjectName(dir: string): string {
   const fallback = basename(dir) || dir || "default";
   projectNameCache.set(dir, fallback);
   return fallback;
+}
+
+function inferProjectFromPath(targetPath: string): { cwd: string; name: string } | null {
+  if (!targetPath || typeof targetPath !== "string") return null;
+  const raw = targetPath.trim();
+  if (!raw || isAppBundle(raw)) return null;
+
+  try {
+    let dir = raw;
+    if (existsSync(raw)) {
+      const stat = statSync(raw);
+      if (!stat.isDirectory()) {
+        dir = dirname(raw);
+      }
+    } else {
+      dir = dirname(raw);
+    }
+    const top = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+      cwd: dir,
+      stdio: ["ignore", "pipe", "ignore"],
+      encoding: "utf8",
+      timeout: 1000,
+    }).trim();
+    if (top) {
+      return { cwd: top, name: resolveProjectName(top) };
+    }
+    return { cwd: dir, name: resolveProjectName(dir) };
+  } catch {
+    return null;
+  }
+}
+
+function updateSessionProjectIfDiscovered(sid: string, candidatePath?: string): void {
+  if (!sid || !candidatePath || typeof candidatePath !== "string") return;
+  const discovered = inferProjectFromPath(candidatePath);
+  if (discovered) {
+    const existing = sessionProjects.get(sid);
+    if (!existing || existing.cwd !== discovered.cwd || existing.name === "default") {
+      sessionProjects.set(sid, discovered);
+      if (DEBUG) {
+        console.error(`[agentmemory] Session ${sid} dynamically bound to project: ${discovered.name} (${discovered.cwd})`);
+      }
+    }
+  }
 }
 const stashedFiles = new Map<string, Set<string>>();
 const seenSubtaskIds = new Map<string, Set<string>>();
@@ -417,11 +462,6 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
         } else {
           cancelPendingSummarize(sid);
         }
-        await observe(sid, "session_status", {
-          status_type: status.type,
-          attempt: status.attempt ?? null,
-          message: safeSlice(status.message, 2000),
-        });
       }
 
       // ── session.compacted ──
@@ -435,29 +475,12 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
 
       // ── session.updated ──
       if (type === "session.updated") {
-        const info = props.info as Record<string, unknown> | undefined;
-        const sid = (info?.id as string) || props.sessionID || activeSessionId;
-        if (!sid) return;
-        await observe(sid, "session_updated", {
-          title: info?.title ?? null,
-          parentID: info?.parentID ?? null,
-          additions: (info?.summary as any)?.additions ?? null,
-          deletions: (info?.summary as any)?.deletions ?? null,
-          files: (info?.summary as any)?.files ?? null,
-        });
+        // Internal telemetry filtered at edge
       }
 
       // ── session.diff ──
       if (type === "session.diff") {
-        const sid = props.sessionID || activeSessionId;
-        if (!sid || !Array.isArray(props.diff)) return;
-        const diffs = props.diff as Array<Record<string, unknown>>;
-        await observe(sid, "session_diff", {
-          files: diffs.map(d => d.file),
-          additions: diffs.reduce((s, d) => s + ((d.additions as number) || 0), 0),
-          deletions: diffs.reduce((s, d) => s + ((d.deletions as number) || 0), 0),
-          diffs: diffs.slice(0, 50),
-        });
+        // Internal telemetry filtered at edge
       }
 
       // ── session.deleted ──
@@ -497,7 +520,13 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
           const sid = props.sessionID || (info.sessionID as string) || activeSessionId;
           if (!sid) return;
           const tokens = info.tokens as Record<string, unknown> | undefined;
+          const outputTokens = ((tokens?.output as number) ?? 0);
           const error = info.error ? extractErrorMessage(info.error) : null;
+
+          if (!info.finish || (!error && outputTokens <= 0)) {
+            return;
+          }
+
           await observe(sid, "assistant_message", {
             messageID: info.id,
             parentID: info.parentID,
@@ -507,7 +536,7 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
             cost: info.cost ?? 0,
             tokens: {
               input: tokens?.input ?? 0,
-              output: tokens?.output ?? 0,
+              output: outputTokens,
               reasoning: tokens?.reasoning ?? 0,
               cache_read: (tokens?.cache as any)?.read ?? 0,
               cache_write: (tokens?.cache as any)?.write ?? 0,
@@ -560,6 +589,19 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
           if (!callId) return;
           const toolName = part.tool as string;
 
+          if (state.input && typeof state.input === "object") {
+            const inObj = state.input as Record<string, unknown>;
+            for (const fp of extractFilePaths(inObj)) {
+              updateSessionProjectIfDiscovered(sid, fp);
+            }
+            if (typeof inObj.workdir === "string") {
+              updateSessionProjectIfDiscovered(sid, inObj.workdir);
+            }
+            if (typeof inObj.cwd === "string") {
+              updateSessionProjectIfDiscovered(sid, inObj.cwd);
+            }
+          }
+
           if (state.status === "completed") {
             const callSet = toolCallSetFor(sid);
             if (callSet.has(callId)) return;
@@ -603,22 +645,12 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
         }
 
         if (part.type === "step-finish") {
-          await observe(sid, "step_finish", {
-            messageID: part.messageID,
-            reason: part.reason ?? null,
-            cost: (part as any).cost ?? 0,
-            input_tokens: ((part as any).tokens?.input as number) ?? 0,
-            output_tokens: ((part as any).tokens?.output as number) ?? 0,
-            reasoning_tokens: ((part as any).tokens?.reasoning as number) ?? 0,
-          });
+          // Internal telemetry filtered at edge
           return;
         }
 
         if (part.type === "reasoning") {
-          await observe(sid, "reasoning", {
-            messageID: part.messageID,
-            text: safeSlice((part as any).text, 4000),
-          });
+          // Internal telemetry filtered at edge
           return;
         }
 
@@ -646,10 +678,7 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
         }
 
         if (part.type === "agent") {
-          await observe(sid, "agent_selected", {
-            messageID: part.messageID,
-            name: (part as any).name,
-          });
+          // Internal telemetry filtered at edge
           return;
         }
 
@@ -737,9 +766,10 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
       const parts = output.parts || [];
       const files = parts
         .filter((p: any) => p.type === "file")
-        .map((p: any) => p.filename || p.url)
+        .map((p: any) => p.filename || p.url || p.path || p.filePath || p.file)
         .filter(Boolean);
       for (const f of files) {
+        updateSessionProjectIfDiscovered(sid, f);
         const stash = stashFor(sid);
         stash.add(f);
         if (stash.size > MAX_STASHED_FILES) {
@@ -763,29 +793,27 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
     },
 
     // ── chat.params ──
-    "chat.params": async (input, output) => {
-      if (!input.model || !output) return;
-      const sid = input.sessionID || activeSessionId;
-      if (!sid) return;
-      await observe(sid, "llm_params", {
-        agent: input.agent,
-        model: `${input.model.providerID}/${input.model.id}`,
-        provider_url: input.model.api?.url ?? null,
-        temperature: output.temperature,
-        topP: output.topP,
-        max_output_tokens: input.model.limit?.output ?? null,
-        context_limit: input.model.limit?.context ?? null,
-        cost_1k_input: input.model.cost?.input ?? 0,
-        cost_1k_output: input.model.cost?.output ?? 0,
-      });
+    "chat.params": async (_input, _output) => {
+      // Internal telemetry filtered at edge
     },
 
     // ── tool.execute.before ──
     "tool.execute.before": async (input, output) => {
-      if (!FILE_TOOLS.has(String(input.tool ?? "").toLowerCase())) return;
       const sid = input.sessionID || activeSessionId;
       if (!sid) return;
       const args = output.args as Record<string, unknown> | undefined;
+      if (args) {
+        for (const fp of extractFilePaths(args)) {
+          updateSessionProjectIfDiscovered(sid, fp);
+        }
+        if (typeof args.workdir === "string") {
+          updateSessionProjectIfDiscovered(sid, args.workdir);
+        }
+        if (typeof args.cwd === "string") {
+          updateSessionProjectIfDiscovered(sid, args.cwd);
+        }
+      }
+      if (!FILE_TOOLS.has(String(input.tool ?? "").toLowerCase())) return;
       if (!args) return;
       const stash = stashFor(sid);
       for (const fp of extractFilePaths(args)) {
