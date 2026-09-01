@@ -184,12 +184,12 @@ function isReplayedEvent(sid: string, eventTsMs: number | null): boolean {
   return eventTsMs < watermark - 500;
 }
 
-export function __resetReplayGuardForTests(): void {
+function __resetReplayGuardForTests(): void {
   sessionBootstrapMs.clear();
   forkSessionIds.clear();
 }
 
-export function __setReplayWatermarkForTests(sid: string, ms: number, opts?: { fork?: boolean }): void {
+function __setReplayWatermarkForTests(sid: string, ms: number, opts?: { fork?: boolean }): void {
   sessionBootstrapMs.set(sid, ms);
   if (opts?.fork) forkSessionIds.add(sid);
 }
@@ -845,3 +845,10 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
     },
   };
 };
+
+Object.assign(AgentmemoryCapturePlugin, {
+  __resetReplayGuardForTests,
+  __setReplayWatermarkForTests,
+});
+
+export default AgentmemoryCapturePlugin;
