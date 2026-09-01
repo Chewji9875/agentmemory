@@ -260,12 +260,12 @@ function isReplayedEvent(sid: string, eventTsMs: number | null): boolean {
   return eventTsMs < watermark - 500;
 }
 
-export function __resetReplayGuardForTests(): void {
+function __resetReplayGuardForTests(): void {
   sessionBootstrapMs.clear();
   forkSessionIds.clear();
 }
 
-export function __setReplayWatermarkForTests(sid: string, ms: number, opts?: { fork?: boolean }): void {
+function __setReplayWatermarkForTests(sid: string, ms: number, opts?: { fork?: boolean }): void {
   sessionBootstrapMs.set(sid, ms);
   if (opts?.fork) forkSessionIds.add(sid);
 }
@@ -303,13 +303,13 @@ function safeSlice(v: unknown, max: number): string {
   try { return JSON.stringify(v).slice(0, max); } catch { return ""; }
 }
 
-export function normalizePatchData(part: Record<string, unknown>): { files: string[]; title: string } {
+function normalizePatchData(part: Record<string, unknown>): { files: string[]; title: string } {
   const raw = (part as Record<string, unknown>)?.files;
   const files = Array.isArray(raw) ? (raw as unknown[]).filter((f): f is string => typeof f === "string").slice(0, 50) : [];
   return { files, title: `Applied patch to ${files.length} file(s)` };
 }
 
-export function normalizeCommandData(props: Record<string, unknown>): { name: string | undefined; arguments: string; title: string } {
+function normalizeCommandData(props: Record<string, unknown>): { name: string | undefined; arguments: string; title: string } {
   const name = typeof props?.name === "string" ? props.name : undefined;
   return {
     name,
@@ -318,11 +318,11 @@ export function normalizeCommandData(props: Record<string, unknown>): { name: st
   };
 }
 
-export function normalizeSubagentTitle(part: Record<string, unknown>): string {
+function normalizeSubagentTitle(part: Record<string, unknown>): string {
   return `Started subagent: ${safeSlice((part as Record<string, unknown>)?.description || (part as Record<string, unknown>)?.agent || (part as Record<string, unknown>)?.prompt, 120)}`;
 }
 
-export function normalizeTaskTitle(completed: unknown[], todos: unknown[]): string {
+function normalizeTaskTitle(completed: unknown[], todos: unknown[]): string {
   return `Task completed: ${completed.length}/${todos.length} items`;
 }
 
@@ -1093,3 +1093,14 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
     },
   };
 };
+
+Object.assign(AgentmemoryCapturePlugin, {
+  __resetReplayGuardForTests,
+  __setReplayWatermarkForTests,
+  normalizePatchData,
+  normalizeCommandData,
+  normalizeSubagentTitle,
+  normalizeTaskTitle,
+});
+
+export default AgentmemoryCapturePlugin;

@@ -67,7 +67,8 @@ describe("OpenCode plugin standard fields", () => {
   });
 
   it("patch normalizes non-string files and caps at 50", async () => {
-    const { normalizePatchData } = await import("../plugin/opencode/agentmemory-capture.ts");
+    const { AgentmemoryCapturePlugin } = await import("../plugin/opencode/agentmemory-capture.ts");
+    const normalizePatchData = (AgentmemoryCapturePlugin as any).normalizePatchData;
     const raw = ["a.ts", 123 as any, null as any, "b.ts", undefined as any, {} as any];
     const { files, title } = normalizePatchData({ files: raw } as any);
     expect(files).toEqual(["a.ts", "b.ts"]);
@@ -105,7 +106,8 @@ describe("OpenCode plugin standard fields", () => {
   });
 
   it("normalizeCommandData safe against undefined fields and truncates, typed return", async () => {
-    const { normalizeCommandData } = await import("../plugin/opencode/agentmemory-capture.ts");
+    const { AgentmemoryCapturePlugin } = await import("../plugin/opencode/agentmemory-capture.ts");
+    const normalizeCommandData = (AgentmemoryCapturePlugin as any).normalizeCommandData;
     const res = normalizeCommandData({} as any);
     expect(res.name).toBeUndefined();
     expect(res.arguments).toBe("");
@@ -141,7 +143,8 @@ describe("OpenCode plugin standard fields", () => {
   });
 
   it("normalizeSubagentTitle prefers description over agent over prompt and safe slices", async () => {
-    const { normalizeSubagentTitle } = await import("../plugin/opencode/agentmemory-capture.ts");
+    const { AgentmemoryCapturePlugin } = await import("../plugin/opencode/agentmemory-capture.ts");
+    const normalizeSubagentTitle = (AgentmemoryCapturePlugin as any).normalizeSubagentTitle;
     expect(normalizeSubagentTitle({ description: "desc", agent: "ag", prompt: "pr" } as any)).toBe("Started subagent: desc");
     expect(normalizeSubagentTitle({ agent: "ag", prompt: "pr" } as any)).toBe("Started subagent: ag");
     expect(normalizeSubagentTitle({ prompt: "pr" } as any)).toBe("Started subagent: pr");
@@ -178,7 +181,8 @@ describe("OpenCode plugin standard fields", () => {
   });
 
   it("normalizeTaskTitle pure function", async () => {
-    const { normalizeTaskTitle } = await import("../plugin/opencode/agentmemory-capture.ts");
+    const { AgentmemoryCapturePlugin } = await import("../plugin/opencode/agentmemory-capture.ts");
+    const normalizeTaskTitle = (AgentmemoryCapturePlugin as any).normalizeTaskTitle;
     expect(normalizeTaskTitle([{}, {}], [{}, {}, {}] as any)).toBe("Task completed: 2/3 items");
     expect(normalizeTaskTitle([], [] as any)).toBe("Task completed: 0/0 items");
   });
@@ -204,7 +208,7 @@ describe("OpenCode plugin standard fields", () => {
             tokens: { input: 10, output: 20, reasoning: 0, cache: { read: 0, write: 0 } },
             finish: "stop",
             error: null,
-            time: { created: 1000, completed: 2000 },
+            time: { created: Date.now() - 2000, completed: Date.now() - 1000 },
           },
         },
       },
@@ -223,7 +227,7 @@ describe("OpenCode plugin standard fields", () => {
     await initSession(handlers, sid);
 
     await handlers.event({
-      event: { type: "message.updated", properties: { sessionID: sid, info: { role: "assistant", id: "msg-x", parentID: "p1", modelID: "m1", providerID: "pr", mode: "chat", cost: 0, tokens: { input: 10, output: 20, reasoning: 0, cache: { read: 0, write: 0 } }, finish: "stop", error: null, time: { created: 1000, completed: 2000 } } } },
+      event: { type: "message.updated", properties: { sessionID: sid, info: { role: "assistant", id: "msg-x", parentID: "p1", modelID: "m1", providerID: "pr", mode: "chat", cost: 0, tokens: { input: 10, output: 20, reasoning: 0, cache: { read: 0, write: 0 } }, finish: "stop", error: null, time: { created: Date.now() - 2000, completed: Date.now() - 1000 } } } },
     });
     const assistantCalls = capturedRequests.filter((r) => r.url.includes("/observe") && r.body.hookType === "assistant_message");
     expect(assistantCalls.length).toBe(1);

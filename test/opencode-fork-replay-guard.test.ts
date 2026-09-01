@@ -13,11 +13,12 @@ function collectObserveCalls(fetchMock: ReturnType<typeof vi.fn>): Array<{ hookT
 
 async function loadPlugin(worktree = "/repo/agentmemory") {
   const mod = await import("../plugin/opencode/agentmemory-capture.ts");
-  const handlers = await (mod.AgentmemoryCapturePlugin as (c: unknown) => Promise<{ event: (msg: unknown) => Promise<void> }>)({
+  const plugin = (mod.AgentmemoryCapturePlugin || mod.default) as any;
+  const handlers = await plugin({
     worktree,
     project: { id: worktree },
   });
-  return { mod, handlers };
+  return { mod: plugin, handlers };
 }
 
 describe("OpenCode fork replay guard", () => {

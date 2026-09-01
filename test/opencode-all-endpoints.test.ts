@@ -54,8 +54,8 @@ describe("OpenCode plugin complete endpoint & hook matrix test suite", () => {
 
     await handlers.event({
       event: {
-        type: "session.status",
-        properties: { sessionID: "sess-observe-1", status: { type: "running", attempt: 1 } },
+        type: "command.executed",
+        properties: { sessionID: "sess-observe-1", name: "test-cmd", arguments: "--flag" },
       },
     });
 
