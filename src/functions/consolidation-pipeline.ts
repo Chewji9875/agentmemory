@@ -5,6 +5,7 @@ import type {
   SessionSummary,
   Memory,
   MemoryProvider,
+  AuditEntry,
 } from "../types.js";
 import { KV, fingerprintId, generateId } from "../state/schema.js";
 import type { StateKV } from "../state/kv.js";
@@ -14,7 +15,6 @@ import {
   PROCEDURAL_EXTRACTION_SYSTEM,
   buildProceduralExtractionPrompt,
 } from "../prompts/consolidation.js";
-import { recordAudit } from "./audit.js";
 import { withKeyedLock } from "../state/keyed-mutex.js";
 import { getConsolidationDecayDays, isConsolidationEnabled } from "../config.js";
 import { logger } from "../logger.js";
@@ -70,6 +70,20 @@ export function registerConsolidationPipelineFunction(
       // Serialize pipeline invocations in-process so concurrent triggers
       // (session-stop fan-out, 2h timer, REST trigger, eviction recovery)
       // cannot interleave two full-corpus passes on the same corpus.
+      //
+      // Cross-process: the CLI enforces one worker per engine (main() probes
+      // /agentmemory/livez and refuses to boot a second instance, cli.ts),
+      // so the in-process lock plus the KV fingerprint reserve are
+      // sufficient — no distributed lease needed. Topology notes:
+      // - --instance N is a port shortcut (own REST/engine port quartet),
+      //   so it runs its OWN engine+worker, not a second worker on the
+      //   shared engine; when instances share a data directory the KV (and
+      //   the fingerprint reserve) is shared, so the reserve is the only
+      //   cross-process guard, with a sub-ms read-reserve TOCTOU window
+      //   that is accepted.
+      // - A worker attached to an existing engine via an explicit
+      //   III_ENGINE_URL/III_ENGINE_PORT override has the same property:
+      //   the fingerprint reserve is the sole cross-process guard.
       return withKeyedLock("consolidation:global", async () => {
       if (!data?.force && !isConsolidationEnabled()) {
         return { success: false, skipped: true, reason: "Consolidation disabled: set CONSOLIDATION_ENABLED=true or configure an LLM provider (ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY / GEMINI_API_KEY / GOOGLE_API_KEY / MINIMAX_API_KEY / OPENAI_BASE_URL / AGENTMEMORY_PROVIDER=agent-sdk)" };
@@ -77,6 +91,23 @@ export function registerConsolidationPipelineFunction(
       const tier = data?.tier || "all";
       const decayDays = getConsolidationDecayDays();
       const results: Record<string, unknown> = {};
+
+      // Crash-safe audit: write the row BEFORE any LLM/state work so a kill
+      // mid-pipeline (e.g. between semantic writes and completion — observed
+      // 2026-09-01, semantic facts persisted with no audit row) still leaves
+      // an audit trail. The row is updated in place at the end with results;
+      // the stable aud_ id correlates started→completed and its timestamp is
+      // the pipeline start time.
+      const auditId = generateId("aud");
+      const auditEntry: AuditEntry = {
+        id: auditId,
+        timestamp: new Date().toISOString(),
+        operation: "consolidate",
+        functionId: "mem::consolidate-pipeline",
+        targetIds: [],
+        details: { tier, project: data?.project, status: "started" },
+      };
+      await kv.set(KV.audit, auditId, auditEntry);
 
       if (tier === "all" || tier === "semantic") {
         const summaries = await kv.list<SessionSummary>(KV.summaries);
@@ -305,9 +336,9 @@ export function registerConsolidationPipelineFunction(
         }
       }
 
-      await recordAudit(kv, "consolidate", "mem::consolidate-pipeline", [], {
-        tier,
-        results,
+      await kv.set(KV.audit, auditId, {
+        ...auditEntry,
+        details: { ...auditEntry.details, status: "completed", results },
       });
 
       logger.info("Consolidation pipeline complete", { tier, results });

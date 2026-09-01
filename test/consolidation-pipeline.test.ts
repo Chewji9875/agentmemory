@@ -360,6 +360,33 @@ describe("Consolidation Pipeline", () => {
     expect(calls).toBe(2);
   });
 
+  it("writes the audit row before the LLM call so a mid-pipeline kill still leaves a trail", async () => {
+    let auditAtLlmCall: unknown = null;
+    const provider = {
+      name: "test",
+      compress: vi.fn(),
+      summarize: vi.fn().mockImplementation(async () => {
+        auditAtLlmCall = await kv.list("mem:audit");
+        return `<facts><fact confidence="0.9">TypeScript is the primary language</fact></facts>`;
+      }),
+    };
+    registerConsolidationPipelineFunction(sdk as never, kv as never, provider as never);
+
+    for (let i = 0; i < 6; i++) {
+      await kv.set("mem:summaries", `ses_${i}`, makeSummary(i));
+    }
+
+    await sdk.trigger("mem::consolidate-pipeline", { tier: "semantic" });
+
+    const atCall = auditAtLlmCall as Array<{ details: { status: string } }>;
+    expect(atCall.length).toBe(1);
+    expect(atCall[0].details.status).toBe("started");
+
+    const final = await kv.list<{ details: { status: string } }>("mem:audit");
+    expect(final.length).toBe(1);
+    expect(final[0].details.status).toBe("completed");
+  });
+
   it("consolidation records an audit entry", async () => {
     const provider = {
       name: "test",
