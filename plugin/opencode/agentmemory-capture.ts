@@ -662,44 +662,45 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
       const sid = input.sessionID || activeSessionId;
       if (!sid) return;
 
-      if (!contextInjectedSessions.has(sid)) {
-        if (!Array.isArray(output.system)) return;
-        output.system.push(AGENTMEMORY_INSTRUCTIONS);
-        // prefer the context already fetched at session.created;
-        // fall back to a fresh /context call if the cache missed (e.g.
-        // session resumed across plugin reloads).
-        let ctx = startContextCache.get(sid);
-        if (typeof ctx !== "string" || ctx.length === 0) {
-          const result = await postJson("/context", {
-            sessionId: sid,
-            project: projectFor(sid).name,
-          });
-          ctx = (result as any)?.context;
-        } else {
-          startContextCache.delete(sid);
-        }
-        if (typeof ctx === "string" && ctx.length > 0) {
-          output.system.push(ctx);
-        }
-        contextInjectedSessions.add(sid);
+      // Skip internal utility requests (title generator, compaction, subagent summaries)
+      if (
+        (input as any)?.agent === "title" ||
+        (input as any)?.agent === "compaction" ||
+        (input as any)?.small === true
+      ) {
+        return;
+      }
+      if (Array.isArray(output.system)) {
+        const isInternalTitle = output.system.some(
+          (s: string) =>
+            typeof s === "string" &&
+            /title generator|generate a (short|concise|brief) title|title for this conversation|thread title/i.test(s),
+        );
+        if (isInternalTitle) return;
       }
 
-      const stash = stashFor(sid);
-      if (stash.size === 0) return;
-      const files = [...stash].slice(0, 10);
+      if (!Array.isArray(output.system)) return;
 
-      const enrichResult = await postJson("/enrich", {
-        sessionId: sid,
-        files,
-        toolName: "enrich_inject",
-      });
+      // Inject instructions and frozen start context on EVERY regular chat step of the session.
+      // Because startContext and AGENTMEMORY_INSTRUCTIONS are identical across all turns of this session,
+      // LLM prefix caching is 100% preserved (#720), while ensuring the model maintains memory context
+      // throughout multi-turn conversations and across tool execution steps.
+      output.system.push(AGENTMEMORY_INSTRUCTIONS);
 
-      const enrichCtx = (enrichResult as any)?.context;
-      if (typeof enrichCtx === "string" && enrichCtx.length > 0) {
-        if (Array.isArray(output.system)) {
-          output.system.push(enrichCtx);
+      let ctx = startContextCache.get(sid);
+      if (typeof ctx !== "string" || ctx.length === 0) {
+        const result = await postJson("/context", {
+          sessionId: sid,
+          project: projectFor(sid).name,
+        });
+        ctx = (result as any)?.context;
+        if (typeof ctx === "string" && ctx.length > 0) {
+          startContextCache.set(sid, ctx);
         }
-        for (const f of files) stash.delete(f);
+      }
+
+      if (typeof ctx === "string" && ctx.length > 0) {
+        output.system.push(ctx);
       }
     },
 

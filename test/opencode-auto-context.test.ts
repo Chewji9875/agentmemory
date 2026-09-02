@@ -24,10 +24,9 @@ describe("OpenCode plugin auto-context injection (#431)", () => {
     );
   });
 
-  it("chat.system.transform reads cached context first, falls back to /context", () => {
+  it("chat.system.transform reads cached context on every turn and falls back to /context", () => {
     expect(plugin).toMatch(/startContextCache\.get\(sid\)/);
     expect(plugin).toMatch(/postJson\(["']\/context["']/);
-    expect(plugin).toMatch(/startContextCache\.delete\(sid\)/);
   });
 
   it("session.deleted clears the cache to avoid stale entries", () => {
