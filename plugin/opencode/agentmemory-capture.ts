@@ -108,6 +108,7 @@ function resolveProjectName(dir: string): string {
 const stashedFiles = new Map<string, Set<string>>();
 const seenSubtaskIds = new Map<string, Set<string>>();
 const seenToolCallIds = new Map<string, Set<string>>();
+const seenAssistantMessageIds = new Map<string, Set<string>>();
 // cache the context returned by POST /session/start so the chat
 // system-transform hook can inject it without a second /context fetch.
 // Auto-injection happens at session.created (immediately) and cached
@@ -132,10 +133,17 @@ function toolCallSetFor(sid: string): Set<string> {
   return s;
 }
 
+function assistantMessageSetFor(sid: string): Set<string> {
+  let s = seenAssistantMessageIds.get(sid);
+  if (!s) { s = new Set<string>(); seenAssistantMessageIds.set(sid, s); }
+  return s;
+}
+
 function pruneSessionMaps(sid: string): void {
   stashedFiles.delete(sid);
   seenSubtaskIds.delete(sid);
   seenToolCallIds.delete(sid);
+  seenAssistantMessageIds.delete(sid);
   sessionProjects.delete(sid);
 }
 
@@ -185,10 +193,9 @@ memory_consolidate — Run the 4-tier memory consolidation pipeline.
 All memory tools start with \`agentmemory_memory_\`. Use the exact names as they appear in your tool list. Tool results are JSON. Always check what was returned before presenting to the user.
 </agentmemory-instructions>`;
 
-// Upstream @opencode-ai/plugin types omit runtime agent and model parameters (#1184)
+// Upstream @opencode-ai/plugin types omit runtime agent parameter (#1184)
 interface OpenCodeChatTransformInput {
   sessionID?: string;
-  model?: unknown;
   agent?: string;
   small?: boolean;
 }
@@ -367,6 +374,11 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
         if (info.role === "assistant") {
           const sid = props.sessionID || (info.sessionID as string) || activeSessionId;
           if (!sid) return;
+          const isTerminal = info.finish != null || info.error != null || (info.time as any)?.completed != null;
+          if (!isTerminal) return;
+          const seen = assistantMessageSetFor(sid);
+          if (seen.has(info.id as string)) return;
+          seen.add(info.id as string);
           const tokens = info.tokens as Record<string, unknown> | undefined;
           const error = info.error ? extractErrorMessage(info.error) : null;
           await observe(sid, "assistant_message", {
@@ -471,14 +483,7 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
         }
 
         if (part.type === "step-finish") {
-          await observe(sid, "step_finish", {
-            messageID: part.messageID,
-            reason: part.reason ?? null,
-            cost: (part as any).cost ?? 0,
-            input_tokens: ((part as any).tokens?.input as number) ?? 0,
-            output_tokens: ((part as any).tokens?.output as number) ?? 0,
-            reasoning_tokens: ((part as any).tokens?.reasoning as number) ?? 0,
-          });
+          // Internal telemetry filtered at edge to avoid double-counting tokens/cost
           return;
         }
 
@@ -691,26 +696,66 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
       );
       if (isInternalTitle) return;
 
-      // Inject instructions and frozen start context on EVERY regular chat step of the session.
-      // Because startContext and AGENTMEMORY_INSTRUCTIONS are identical across all turns of this session,
-      // LLM prefix caching is 100% preserved (#720), while ensuring the model maintains memory context
-      // throughout multi-turn conversations and across tool execution steps.
-      output.system.push(AGENTMEMORY_INSTRUCTIONS);
-
+      // Identical bytes per turn preserve LLM prefix cache (#720) across all regular chat steps.
       let ctx = startContextCache.get(sid);
-      if (typeof ctx !== "string" || ctx.length === 0) {
+      if (typeof ctx !== "string") {
         const result = await postJson("/context", {
           sessionId: sid,
           project: projectFor(sid).name,
         });
         ctx = (result as OpenCodeContextResponse)?.context;
-        if (typeof ctx === "string" && ctx.length > 0) {
+        if (typeof ctx === "string") {
           startContextCache.set(sid, ctx);
+        } else {
+          startContextCache.set(sid, "");
         }
       }
 
+      output.system.push(AGENTMEMORY_INSTRUCTIONS);
       if (typeof ctx === "string" && ctx.length > 0) {
         output.system.push(ctx);
+      }
+    },
+
+    // ── experimental.chat.messages.transform ──
+    // In-memory message transform hook: attaches volatile file enrichment context to the tail
+    // of the latest user message in-memory without touching SQLite durable events or creating UI clutter.
+    "experimental.chat.messages.transform": async (input, output) => {
+      const msgs = output?.messages;
+      if (!Array.isArray(msgs) || msgs.length === 0) return;
+
+      const lastUserMsg = msgs.filter((m: any) => m.info?.role === "user").pop();
+      if (!lastUserMsg) return;
+      const sid = lastUserMsg.info?.sessionID || activeSessionId;
+      if (!sid) return;
+
+      const stash = stashFor(sid);
+      if (stash.size === 0) return;
+
+      const stashedFileList = [...stash].slice(0, 10);
+      for (const f of stashedFileList) stash.delete(f);
+
+      const proj = projectFor(sid);
+      try {
+        const enrichResult = await postJson(
+          "/enrich",
+          {
+            sessionId: sid,
+            files: stashedFileList,
+            project: proj.name,
+            toolName: "enrich_inject",
+          },
+          3000,
+        );
+        const enrichCtx = (enrichResult as any)?.context;
+        if (typeof enrichCtx === "string" && enrichCtx.length > 0 && Array.isArray(lastUserMsg.parts)) {
+          const textPart = lastUserMsg.parts.filter((p: any) => p.type === "text").pop() as any;
+          if (textPart) {
+            textPart.text = (textPart.text || "") + `\n\n<agentmemory-file-context>\n${enrichCtx}\n</agentmemory-file-context>`;
+          }
+        }
+      } catch (e) {
+        if (DEBUG) console.error("[agentmemory] enrich injection failed:", (e as Error).message);
       }
     },
 

@@ -1,8 +1,23 @@
+export interface SessionMetrics {
+  tokens: {
+    input: number;
+    output: number;
+    reasoning: number;
+    cacheRead: number;
+    cacheWrite: number;
+  };
+  cost: number;
+  durationMs: number;
+  turnCount: number;
+  models: Record<string, number>;
+}
+
 export interface Session {
   id: string;
   project: string;
   cwd: string;
   startedAt: string;
+  updatedAt?: string;
   endedAt?: string;
   status: "active" | "completed" | "abandoned";
   observationCount: number;
@@ -12,6 +27,7 @@ export interface Session {
   summary?: string;
   commitShas?: string[];
   agentId?: string;
+  metrics?: SessionMetrics;
 }
 
 export interface CommitLink {
@@ -59,6 +75,8 @@ export interface RawObservation {
   imageData?: string;
   agentId?: string;
   origin?: Origin;
+  title?: string;
+  files?: string[];
 }
 
 export interface CompressedObservation {
@@ -148,7 +166,22 @@ export type HookType =
   | "notification"
   | "task_completed"
   | "stop"
-  | "session_end";
+  | "session_end"
+  | "command_executed"
+  | "assistant_message"
+  | "session_status"
+  | "step_finish"
+  | "reasoning"
+  | "patch_applied"
+  | "permission_replied"
+  | "session_diff"
+  | "session_updated"
+  | "session_compacted"
+  | "message_removed"
+  | "compaction_event"
+  | "agent_selected"
+  | "retry_attempt"
+  | "llm_params";
 
 export interface HookPayload {
   hookType: HookType;

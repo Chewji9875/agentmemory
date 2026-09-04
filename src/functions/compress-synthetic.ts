@@ -15,9 +15,15 @@ function inferType(
 ): ObservationType {
   if (hookType === "post_tool_failure") return "error";
   if (hookType === "prompt_submit") return "conversation";
-  if (hookType === "subagent_stop" || hookType === "task_completed")
+  if (
+    hookType === "subagent_stop" ||
+    hookType === "task_completed" ||
+    hookType === "subagent_start"
+  )
     return "subagent";
   if (hookType === "notification") return "notification";
+  if (hookType === "command_executed") return "command_run";
+  if (hookType === "patch_applied") return "file_edit";
 
   if (!toolName) return "other";
   // Normalize camelCase and kebab-case into word chunks so we can match
@@ -90,12 +96,17 @@ export function buildSyntheticCompression(
     sessionId: raw.sessionId,
     timestamp: raw.timestamp,
     type: inferType(toolName, raw.hookType),
-    title: truncate(toolName || "observation", 80),
+    title: raw.title
+      ? truncate(raw.title, 80)
+      : truncate(toolName || "observation", 80),
     subtitle: inputStr ? truncate(inputStr, 120) : undefined,
     facts: [],
     narrative: truncate(narrativeParts.join(" | "), 400),
     concepts: [],
-    files: extractFiles(raw.toolInput),
+    files:
+      raw.files && raw.files.length > 0
+        ? raw.files
+        : extractFiles(raw.toolInput),
     importance: 5,
     confidence: 0.3,
   };

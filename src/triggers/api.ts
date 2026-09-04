@@ -850,7 +850,10 @@ export function registerApiTriggers(
     async (req: ApiRequest): Promise<Response> => {
       const authErr = checkAuth(req, secret);
       if (authErr) return authErr;
-      const sessions = await kv.list<Session>(KV.sessions);
+      const [sessions, summaries] = await Promise.all([
+        kv.list<Session>(KV.sessions),
+        kv.list<SessionSummary>(KV.summaries).catch(() => [] as SessionSummary[]),
+      ]);
       const normalizedAgentId =
         typeof req.query_params?.["agentId"] === "string"
           ? req.query_params["agentId"].trim()
@@ -865,25 +868,20 @@ export function registerApiTriggers(
       const filtered = filterAgentId
         ? sessions.filter((s) => s.agentId === filterAgentId)
         : sessions;
-      // Bounded fan-out: each kv.get is a full engine invocation, so
-      // Promise.all over hundreds of sessions saturates the invocation
-      // pool. Batch in chunks of 10 (parallel within a chunk, sequential
-      // across chunks); the summaries array stays index-aligned with
-      // `filtered`.
-      const summaries: Array<SessionSummary | null> = [];
-      for (let batch = 0; batch < filtered.length; batch += 10) {
-        const chunk = filtered.slice(batch, batch + 10);
-        const results = await Promise.all(
-          chunk.map((s) =>
-            kv.get<SessionSummary>(KV.summaries, s.id).catch(() => null),
-          ),
-        );
-        summaries.push(...results);
-      }
-      const withSummary = filtered.map((s, i) =>
-        summaries[i] ? { ...s, summary: summaries[i] } : s,
+      const summaryMap = new Map(
+        summaries.map((s) => [s.sessionId ?? (s as unknown as { id: string }).id, s]),
       );
-      return { status_code: 200, body: { sessions: withSummary } };
+      const withSummary = filtered.map((s) => {
+        const sum = summaryMap.get(s.id);
+        return sum ? { ...s, summary: sum } : s;
+      });
+      const rawLimit = Number(req.query_params?.["limit"]);
+      const limit =
+        Number.isFinite(rawLimit) && rawLimit > 0
+          ? Math.floor(rawLimit)
+          : undefined;
+      const result = limit ? withSummary.slice(0, limit) : withSummary;
+      return { status_code: 200, body: { sessions: result } };
     },
   );
   sdk.registerTrigger({
