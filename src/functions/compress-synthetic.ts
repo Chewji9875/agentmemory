@@ -99,7 +99,7 @@ export function buildSyntheticCompression(
       narrative: "",
       concepts: [],
       files: [],
-      importance: 5,
+      importance: 1,
       confidence: 0.3,
       isTelemetry: true,
     };
