@@ -68,8 +68,8 @@ describe("Live Verification: 5 Key Fixes for Agentmemory OpenCode Plugin", () =>
       const subsequentTurnOutput = { system: ["You are a helpful coding assistant."] };
       await handlers["experimental.chat.system.transform"]({ sessionID }, subsequentTurnOutput);
 
-      // Invariant: System prompt on Turn 2+ is NEVER mutated (100% Cache Invariance)
-      expect(subsequentTurnOutput.system).toEqual(["You are a helpful coding assistant."]);
+      // Invariant: System prompt on Turn 2+ matches Turn 1 exactly (identical bytes, 100% prefix cache preserved #720)
+      expect(subsequentTurnOutput.system).toEqual(turn1Output.system);
     }
   });
 

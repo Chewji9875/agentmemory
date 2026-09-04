@@ -22,7 +22,6 @@ import { validateOutput } from "../eval/validator.js";
 import { scoreCompression } from "../eval/quality.js";
 import { compressWithRetry } from "../eval/self-correct.js";
 import type { MetricsStore } from "../eval/metrics-store.js";
-import { buildSyntheticCompression } from "./compress-synthetic.js";
 import { logger } from "../logger.js";
 
 const VALID_TYPES = new Set<string>([

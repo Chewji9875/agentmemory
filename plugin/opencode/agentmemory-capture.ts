@@ -250,7 +250,7 @@ function ensureSessionBootstrap(sid: string, _eventTsMs: number | null): void {
 }
 
 function maybeMarkForkFromTimestamp(sid: string, eventTsMs: number | null): void {
-  if (eventTsMs == null) return;
+  if (eventTsMs == null || eventTsMs < 1_500_000_000_000) return;
   if (forkSessionIds.has(sid)) return;
   const watermark = sessionBootstrapMs.get(sid);
   if (watermark == null) return;
@@ -768,7 +768,10 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
         }
 
         if (part.type === "reasoning") {
-          // Internal telemetry filtered at edge
+          await observe(sid, "reasoning", {
+            messageID: part.messageID,
+            text: safeSlice((part as any).text, 4000),
+          });
           return;
         }
 

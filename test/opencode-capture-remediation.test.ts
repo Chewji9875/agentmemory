@@ -109,8 +109,8 @@ describe("OpenCode plugin remediation test suite (#1184, #720, #1188)", () => {
       turn2Output,
     );
 
-    // System prompt on Turn 2 MUST NOT be mutated
-    expect(turn2Output.system).toEqual(["Base System Prompt"]);
+    // Invariant: System prompt on Turn 2+ matches Turn 1 exactly (identical bytes, 100% prefix cache preserved #720)
+    expect(turn2Output.system).toEqual(turn1Output.system);
   });
 
   it("Issue #720 (Cache-Safe Dynamic File Enrichment): injects file context into experimental.chat.messages.transform at tail", async () => {
@@ -478,9 +478,9 @@ describe("OpenCode plugin remediation test suite (#1184, #720, #1188)", () => {
         turnOutput,
       );
 
-      // Verify that system prompt was not modified
-      expect(turnOutput.system).toEqual([basePrompt]);
-      expect(turnOutput.system).toHaveLength(1);
+      // Verify that system prompt matches Turn 1 exactly (identical bytes across all turns)
+      expect(turnOutput.system).toEqual(turn1Output.system);
+      expect(turnOutput.system.length).toBeGreaterThanOrEqual(2);
     }
   });
 

@@ -51,16 +51,6 @@ export function extractImage(d: unknown): string | undefined {
   return undefined;
 }
 
-function safeSlice(v: unknown, max: number): string {
-  if (typeof v === "string") return v.slice(0, max);
-  if (v == null) return "";
-  try {
-    return JSON.stringify(v).slice(0, max);
-  } catch {
-    return String(v).slice(0, max);
-  }
-}
-
 export function registerObserveFunction(
   sdk: ISdk,
   kv: StateKV,
@@ -251,15 +241,20 @@ export function registerObserveFunction(
         if (payload.hookType === "command_executed") {
           const nameVal = d["name"] ?? d["tool_name"];
           const isStringName = typeof nameVal === "string";
-          const name = isStringName ? nameVal : "unknown";
-          raw.toolName = `command:${name}`;
-          if (raw.origin) raw.origin.detail = name;
+          const name = isStringName ? nameVal : undefined;
+          if (name) {
+            raw.toolName = name;
+            if (raw.origin) raw.origin.detail = name;
+          } else if (nameVal !== undefined && nameVal !== null) {
+            raw.toolName = String(nameVal);
+          }
           const args = d["arguments"] ?? d["tool_input"];
           if (args !== undefined && args !== null) {
             const s = String(args);
             if (s.length > 0) raw.toolInput = s.length > 2000 ? s.slice(0, 2000) : s;
           }
-          raw.title = `Executed command: ${name}`;
+          const titleName = isStringName ? nameVal : String(nameVal ?? "unknown");
+          raw.title = `Executed command: ${titleName}`;
         }
         if (payload.hookType === "subagent_start") {
           const desc = typeof d["description"] === "string" ? d["description"] : undefined;
@@ -286,7 +281,12 @@ export function registerObserveFunction(
           let total = 0;
           if (typeof d["total"] === "number") total = d["total"];
           else if (typeof d["total"] === "string") total = Number(d["total"]) || 0;
-          raw.title = `Task completed: ${completedLen}/${total} items`;
+          raw.title =
+            typeof d["title"] === "string"
+              ? d["title"]
+              : (completed !== undefined || d["total"] !== undefined)
+                ? `Task completed: ${completedLen}/${total} items`
+                : "Task completed";
           if (Array.isArray(completed)) {
             const contents = (completed as unknown[])
               .map((item) => {
@@ -503,6 +503,10 @@ export function registerObserveFunction(
           });
         } else {
           const synthetic = buildSyntheticCompression(raw);
+          if (raw.toolName) (synthetic as any).toolName = raw.toolName;
+          if (raw.toolInput) (synthetic as any).toolInput = raw.toolInput;
+          if (raw.files) (synthetic as any).files = raw.files;
+          if (raw.title) (synthetic as any).title = raw.title;
           await kv.set(
             KV.observations(payload.sessionId),
             obsId,
@@ -558,9 +562,14 @@ export function registerObserveFunction(
           obsId,
           sessionId: payload.sessionId,
           hook: payload.hookType,
-          compress: isAutoCompressEnabled() && !shouldUseSynthetic ? "llm" : "synthetic",
+          compress: isAutoCompressEnabled() ? "llm" : "synthetic",
         });
-        return { observationId: obsId };
+        return {
+          success: true,
+          observationId: obsId,
+          sessionId: payload.sessionId,
+          ...(payload.hookType === "assistant_message" ? { telemetry: true } : {}),
+        };
       });
     },
   );

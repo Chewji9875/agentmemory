@@ -179,7 +179,7 @@ describe("observe telemetry layer 1", () => {
 
   it("task_completed handles missing completed/total", async () => {
     const raw = await observeAndGetRaw("task_completed", {});
-    expect(raw.title).toBe("Task completed: 0/0 items");
+    expect(raw.title).toBe("Task completed");
   });
 
   it("prompt_submit keeps userPrompt and extracts files cap 20 strings only", async () => {
@@ -197,9 +197,14 @@ describe("observe telemetry layer 1", () => {
     expect(raw.files!.length).toBe(20);
   });
 
-  it("assistant_message is marked isTelemetry", async () => {
-    const raw = await observeAndGetRaw("assistant_message", { text: "hi" });
-    expect(raw.isTelemetry).toBe(true);
+  it("assistant_message is routed to session metrics without creating observation", async () => {
+    const { registerObserveFunction } = await import("../src/functions/observe.js");
+    const sdk = mockSdk();
+    const kv = mockKV();
+    registerObserveFunction(sdk as never, kv as never);
+    const result = (await sdk.trigger("mem::observe", payload("assistant_message", { text: "hi" }))) as any;
+    expect(result.telemetry).toBe(true);
+    expect(result.observationId).toBeUndefined();
   });
 
   it("session_status is marked isTelemetry", async () => {

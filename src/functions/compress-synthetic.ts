@@ -155,7 +155,7 @@ export function buildSyntheticCompression(
     for (const f of raw.files) {
       if (typeof f === "string" && f.length > 0 && f.length < 512) {
         dedup.add(f);
-        if (dedup.size >= 20) break;
+        if (dedup.size >= 50) break;
       }
     }
     files = [...dedup].slice(0, 20);
