@@ -504,8 +504,22 @@ export function registerObserveFunction(
         } else {
           const synthetic = buildSyntheticCompression(raw);
           if (raw.toolName) (synthetic as any).toolName = raw.toolName;
-          if (raw.toolInput) (synthetic as any).toolInput = raw.toolInput;
-          if (raw.files) (synthetic as any).files = raw.files;
+          if (raw.toolInput) {
+            const inputVal = raw.toolInput;
+            if (typeof inputVal === "string") {
+              (synthetic as any).toolInput =
+                inputVal.length > 4000
+                  ? inputVal.slice(0, 4000) + "\n[...truncated for memory storage]"
+                  : inputVal;
+            } else {
+              (synthetic as any).toolInput = inputVal;
+            }
+          }
+          if (raw.files) {
+            (synthetic as any).files = Array.isArray(raw.files)
+              ? raw.files.slice(0, 50)
+              : raw.files;
+          }
           if (raw.title) (synthetic as any).title = raw.title;
           await kv.set(
             KV.observations(payload.sessionId),
