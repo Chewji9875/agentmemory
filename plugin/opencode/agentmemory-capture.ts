@@ -171,16 +171,15 @@ function updateSessionProjectIfDiscovered(sid: string, candidatePath?: string): 
 const stashedFiles = new Map<string, Set<string>>();
 const seenSubtaskIds = new Map<string, Set<string>>();
 const seenToolCallIds = new Map<string, Set<string>>();
-const contextInjectedSessions = new Set<string>();
 const pendingSummarizeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const inFlightSummaries = new Set<string>();
 const sessionBootstrapMs = new Map<string, number>();
 const forkSessionIds = new Set<string>();
+const seenAssistantMessageIds = new Map<string, Set<string>>();
 // cache the context returned by POST /session/start so the chat
 // system-transform hook can inject it without a second /context fetch.
-// Auto-injection now happens at session.created (immediately) AND at
-// the first prompt_submit (fallback for older OpenCode builds that
-// don't implement experimental.chat.system.transform).
+// Auto-injection happens at session.created (immediately) and cached
+// startContext is injected on every chat turn to preserve LLM prefix caching (#720).
 const startContextCache = new Map<string, string>();
 
 function stashFor(sid: string): Set<string> {
@@ -209,12 +208,19 @@ function cancelPendingSummarize(sid: string): void {
   }
 }
 
+function assistantMessageSetFor(sid: string): Set<string> {
+  let s = seenAssistantMessageIds.get(sid);
+  if (!s) { s = new Set<string>(); seenAssistantMessageIds.set(sid, s); }
+  return s;
+}
+
 function pruneSessionMaps(sid: string): void {
   cancelPendingSummarize(sid);
   inFlightSummaries.delete(sid);
   stashedFiles.delete(sid);
   seenSubtaskIds.delete(sid);
   seenToolCallIds.delete(sid);
+  seenAssistantMessageIds.delete(sid);
   sessionProjects.delete(sid);
   sessionBootstrapMs.delete(sid);
   forkSessionIds.delete(sid);
@@ -365,6 +371,17 @@ memory_consolidate — Run the 4-tier memory consolidation pipeline.
 All memory tools start with \`agentmemory_memory_\`. Use the exact names as they appear in your tool list. Tool results are JSON. Always check what was returned before presenting to the user.
 </agentmemory-instructions>`;
 
+// Upstream @opencode-ai/plugin types omit runtime agent parameter (#1184)
+interface OpenCodeChatTransformInput {
+  sessionID?: string;
+  agent?: string;
+  small?: boolean;
+}
+
+interface OpenCodeContextResponse {
+  context?: string;
+}
+
 function extractFilePaths(args: Record<string, unknown>): string[] {
   const files: string[] = [];
   for (const key of FILE_KEYS) {
@@ -484,7 +501,6 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
         stashedFiles.set(activeSessionId, new Set());
         seenSubtaskIds.delete(activeSessionId);
         seenToolCallIds.delete(activeSessionId);
-        contextInjectedSessions.delete(activeSessionId);
         // Snapshot the session id locally — `activeSessionId` is mutable
         // and another `session.created` event during the await could
         // rebind it, causing context to be cached against the wrong key.
@@ -581,7 +597,6 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
         if (sid === activeSessionId) activeSessionId = null;
         pruneSessionMaps(sid);
         startContextCache.delete(sid);
-        contextInjectedSessions.delete(sid);
       }
 
       // ── session.error ──
@@ -608,6 +623,11 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
           ensureSessionBootstrap(sid, eventTs);
           maybeMarkForkFromTimestamp(sid, eventTs);
           if (isReplayedEvent(sid, eventTs)) return;
+          const isTerminal = info.finish != null || info.error != null || (info.time as any)?.completed != null;
+          if (!isTerminal) return;
+          const seen = assistantMessageSetFor(sid);
+          if (seen.has(info.id as string)) return;
+          seen.add(info.id as string);
           const tokens = info.tokens as Record<string, unknown> | undefined;
           const outputTokens = ((tokens?.output as number) ?? 0);
           const error = info.error ? extractErrorMessage(info.error) : null;
@@ -743,7 +763,7 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
         }
 
         if (part.type === "step-finish") {
-          // Internal telemetry filtered at edge
+          // Internal telemetry filtered at edge to avoid double-counting tokens/cost
           return;
         }
 
@@ -963,46 +983,48 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
     // ── experimental.chat.system.transform ──
     "experimental.chat.system.transform": async (input, output) => {
       const sid = input.sessionID || activeSessionId;
-      if (!sid) return;
+      if (!sid || !Array.isArray(output.system)) return;
 
-      // Skip internal/title-generator LLM requests — OpenCode fires an internal concurrent
-      // title request on turn 1 using the same sessionID. If injected there, the title
-      // generator consumes the one-time injection and the main conversation turn gets nothing! (Issue #1184)
-      if (Array.isArray(output.system)) {
-        const isInternalTitle = output.system.some(
-          (s: string) =>
-            typeof s === "string" &&
-            /title generator|generate a (short|concise|brief) title|title for this conversation|thread title/i.test(s),
-        );
-        if (isInternalTitle) return;
+      // Type assertion: upstream @opencode-ai/plugin types omit runtime agent and small model flags (#1184)
+      const chatInput = input as OpenCodeChatTransformInput;
+
+      // Skip internal utility requests (e.g. background auto-title generation #1184 or compaction)
+      // which share the session ID but do not participate in the interactive chat stream.
+      if (
+        chatInput.agent === "title" ||
+        chatInput.agent === "compaction" ||
+        chatInput.small === true
+      ) {
+        return;
       }
 
-      if (!contextInjectedSessions.has(sid)) {
-        if (!Array.isArray(output.system)) return;
-        output.system.push(AGENTMEMORY_INSTRUCTIONS);
-        // prefer the context already fetched at session.created;
-        // fall back to a fresh /context call if the cache missed (e.g.
-        // session resumed across plugin reloads).
-        let ctx = startContextCache.get(sid);
-        if (typeof ctx !== "string" || ctx.length === 0) {
-          const result = await postJson("/context", {
-            sessionId: sid,
-            project: projectFor(sid).name,
-          });
-          ctx = (result as any)?.context;
+      // Fallback for OpenCode runtimes where chatInput.agent is not populated on internal prompts.
+      const isInternalTitle = output.system.some(
+        (s: string) =>
+          typeof s === "string" &&
+          /title generator|generate a (short|concise|brief) title|title for this conversation|thread title/i.test(s),
+      );
+      if (isInternalTitle) return;
+
+      // Identical bytes per turn preserve LLM prefix cache (#720) across all regular chat steps.
+      let ctx = startContextCache.get(sid);
+      if (typeof ctx !== "string") {
+        const result = await postJson("/context", {
+          sessionId: sid,
+          project: projectFor(sid).name,
+        });
+        ctx = (result as OpenCodeContextResponse)?.context;
+        if (typeof ctx === "string") {
+          startContextCache.set(sid, ctx);
         } else {
-          startContextCache.delete(sid);
+          startContextCache.set(sid, "");
         }
-        if (typeof ctx === "string" && ctx.length > 0) {
-          output.system.push(ctx);
-        }
-        contextInjectedSessions.add(sid);
       }
 
-      // Note: We deliberately do NOT push per-turn dynamic file enrichment into output.system
-      // because mutating the system prompt on subsequent turns invalidates LLM prompt/prefix caching (#720),
-      // creating an unnecessary 12.5x-20x cost multiplier. Instead, volatile file enrichment is attached
-      // in-memory to the tail of user message parts in `experimental.chat.messages.transform`.
+      output.system.push(AGENTMEMORY_INSTRUCTIONS);
+      if (typeof ctx === "string" && ctx.length > 0) {
+        output.system.push(ctx);
+      }
     },
 
     // ── experimental.chat.messages.transform ──

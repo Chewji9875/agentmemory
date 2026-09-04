@@ -1,10 +1,24 @@
+export interface SessionMetrics {
+  tokens: {
+    input: number;
+    output: number;
+    reasoning: number;
+    cacheRead: number;
+    cacheWrite: number;
+  };
+  cost: number;
+  durationMs: number;
+  turnCount: number;
+  models: Record<string, number>;
+}
+
 export interface Session {
   id: string;
   project: string;
   cwd: string;
   startedAt: string;
-  endedAt?: string;
   updatedAt?: string;
+  endedAt?: string;
   status: "active" | "completed" | "abandoned";
   observationCount: number;
   model?: string;
@@ -13,6 +27,7 @@ export interface Session {
   summary?: string;
   commitShas?: string[];
   agentId?: string;
+  metrics?: SessionMetrics;
 }
 
 export interface CommitLink {
@@ -172,7 +187,8 @@ export type HookType =
   | "session_diff"
   | "invalid"
   | "council_session"
-  | "permission_prompt";
+  | "permission_prompt"
+  | "agent_selected";
 
 export const TELEMETRY_HOOKS: ReadonlySet<HookType> = new Set<HookType>([
   "assistant_message",

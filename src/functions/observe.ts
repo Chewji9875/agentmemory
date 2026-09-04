@@ -1,5 +1,5 @@
 import { TriggerAction, type ISdk } from "iii-sdk";
-import type { RawObservation, HookPayload, Origin } from "../types.js";
+import type { RawObservation, HookPayload, Origin, Session } from "../types.js";
 import { TELEMETRY_HOOKS } from "../types.js";
 
 const TOOL_HOOKS = new Set(["pre_tool_use", "post_tool_use", "post_tool_failure"]);
@@ -51,6 +51,16 @@ export function extractImage(d: unknown): string | undefined {
   return undefined;
 }
 
+function safeSlice(v: unknown, max: number): string {
+  if (typeof v === "string") return v.slice(0, max);
+  if (v == null) return "";
+  try {
+    return JSON.stringify(v).slice(0, max);
+  } catch {
+    return String(v).slice(0, max);
+  }
+}
+
 export function registerObserveFunction(
   sdk: ISdk,
   kv: StateKV,
@@ -73,6 +83,91 @@ export function registerObserveFunction(
           error:
             "Invalid payload: sessionId, hookType, and timestamp are required",
         };
+      }
+
+      if (payload.hookType === "assistant_message") {
+        return withKeyedLock(`obs:${payload.sessionId}`, async () => {
+          const d =
+            typeof payload.data === "object" && payload.data !== null
+              ? (payload.data as Record<string, any>)
+              : {};
+          const inputTokens =
+            Number(d?.tokens?.input) || Number(d?.input_tokens) || 0;
+          const outputTokens =
+            Number(d?.tokens?.output) || Number(d?.output_tokens) || 0;
+          const reasoningTokens =
+            Number(d?.tokens?.reasoning) || Number(d?.reasoning_tokens) || 0;
+          const cacheRead =
+            Number(d?.tokens?.cache_read) || Number(d?.tokens?.cacheRead) || 0;
+          const cacheWrite =
+            Number(d?.tokens?.cache_write) || Number(d?.tokens?.cacheWrite) || 0;
+          const cost = Number(d?.cost) || 0;
+          const durationMs =
+            Number(d?.duration_ms) || Number(d?.durationMs) || 0;
+          const modelId =
+            typeof d?.modelID === "string"
+              ? d.modelID
+              : typeof d?.model === "string"
+                ? d.model
+                : "unknown";
+
+          let session = await kv.get<Session>(
+            KV.sessions,
+            payload.sessionId,
+          );
+          if (
+            !session &&
+            typeof payload.project === "string" &&
+            payload.project.trim().length > 0 &&
+            typeof payload.cwd === "string" &&
+            payload.cwd.trim().length > 0
+          ) {
+            session = {
+              id: payload.sessionId,
+              project: payload.project,
+              cwd: payload.cwd,
+              startedAt: payload.timestamp,
+              status: "active",
+              observationCount: 0,
+            };
+            await kv.set(KV.sessions, payload.sessionId, session);
+          }
+          if (session) {
+            const metrics = session.metrics || {
+              tokens: {
+                input: 0,
+                output: 0,
+                reasoning: 0,
+                cacheRead: 0,
+                cacheWrite: 0,
+              },
+              cost: 0,
+              durationMs: 0,
+              turnCount: 0,
+              models: {},
+            };
+            metrics.tokens.input += inputTokens;
+            metrics.tokens.output += outputTokens;
+            metrics.tokens.reasoning += reasoningTokens;
+            metrics.tokens.cacheRead += cacheRead;
+            metrics.tokens.cacheWrite += cacheWrite;
+            metrics.cost = Math.round((metrics.cost + cost) * 1e6) / 1e6;
+            metrics.durationMs += durationMs;
+            metrics.turnCount += 1;
+            metrics.models[modelId] =
+              (metrics.models[modelId] || 0) + 1;
+
+            await kv.update(KV.sessions, payload.sessionId, [
+              { type: "set", path: "metrics", value: metrics },
+              { type: "set", path: "updatedAt", value: new Date().toISOString() },
+            ]);
+          }
+          return {
+            success: true,
+            sessionId: payload.sessionId,
+            telemetry: true,
+          };
+        });
       }
 
       const obsId = generateId("obs");
@@ -149,24 +244,22 @@ export function registerObserveFunction(
           const files = extractStringFiles(d["files"], 50);
           raw.files = files;
           raw.title = `Applied patch to ${files.length} file(s)`;
+          if (files.length > 0) {
+            raw.toolInput = files.join(", ");
+          }
         }
         if (payload.hookType === "command_executed") {
-          const nameVal = d["name"];
+          const nameVal = d["name"] ?? d["tool_name"];
           const isStringName = typeof nameVal === "string";
-          const name = isStringName ? nameVal : undefined;
-          if (name) {
-            raw.toolName = name;
-            if (raw.origin) raw.origin.detail = name;
-          } else if (nameVal !== undefined && nameVal !== null) {
-            raw.toolName = String(nameVal);
-          }
-          const args = d["arguments"];
+          const name = isStringName ? nameVal : "unknown";
+          raw.toolName = `command:${name}`;
+          if (raw.origin) raw.origin.detail = name;
+          const args = d["arguments"] ?? d["tool_input"];
           if (args !== undefined && args !== null) {
             const s = String(args);
             if (s.length > 0) raw.toolInput = s.length > 2000 ? s.slice(0, 2000) : s;
           }
-          const titleName = isStringName ? nameVal : String(nameVal ?? "unknown");
-          raw.title = `Executed command: ${titleName}`;
+          raw.title = `Executed command: ${name}`;
         }
         if (payload.hookType === "subagent_start") {
           const desc = typeof d["description"] === "string" ? d["description"] : undefined;
@@ -385,7 +478,20 @@ export function registerObserveFunction(
         // Default path: build a zero-LLM synthetic compression so recall
         // and BM25 search still work without burning the user's Claude
         // token allocation on every tool invocation.
-        if (isAutoCompressEnabled()) {
+        const isClassA =
+          payload.hookType === "command_executed" ||
+          payload.hookType === "patch_applied" ||
+          payload.hookType === "subagent_start" ||
+          payload.hookType === "task_completed";
+        const lacksSubstantiveContent =
+          !raw.toolName &&
+          !raw.toolInput &&
+          !raw.toolOutput &&
+          !raw.userPrompt &&
+          !(raw as any).content;
+        const shouldUseSynthetic = isClassA || lacksSubstantiveContent;
+
+        if (isAutoCompressEnabled() && !shouldUseSynthetic) {
           await sdk.trigger({
             function_id: "mem::compress",
             payload: {
@@ -431,13 +537,28 @@ export function registerObserveFunction(
               },
             },
           });
+          await sdk.trigger({
+            function_id: "stream::send",
+            payload: {
+              stream_name: STREAM.name,
+              group_id: STREAM.viewerGroup,
+              id: `compressed-${obsId}`,
+              type: "compressed_observation",
+              data: {
+                type: "compressed",
+                observation: synthetic,
+                sessionId: payload.sessionId,
+              },
+            },
+            action: TriggerAction.Void(),
+          });
         }
 
         logger.info("Observation captured", {
           obsId,
           sessionId: payload.sessionId,
           hook: payload.hookType,
-          compress: isAutoCompressEnabled() ? "llm" : "synthetic",
+          compress: isAutoCompressEnabled() && !shouldUseSynthetic ? "llm" : "synthetic",
         });
         return { observationId: obsId };
       });

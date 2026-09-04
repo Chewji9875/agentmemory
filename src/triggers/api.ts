@@ -852,7 +852,10 @@ export function registerApiTriggers(
     async (req: ApiRequest): Promise<Response> => {
       const authErr = checkAuth(req, secret);
       if (authErr) return authErr;
-      const sessions = await kv.list<Session>(KV.sessions);
+      const [sessions, summaries] = await Promise.all([
+        kv.list<Session>(KV.sessions),
+        kv.list<SessionSummary>(KV.summaries).catch(() => [] as SessionSummary[]),
+      ]);
       const normalizedAgentId =
         typeof req.query_params?.["agentId"] === "string"
           ? req.query_params["agentId"].trim()
@@ -867,16 +870,20 @@ export function registerApiTriggers(
       const filtered = filterAgentId
         ? sessions.filter((s) => s.agentId === filterAgentId)
         : sessions;
-      const summariesList = await kv.list<SessionSummary>(KV.summaries).catch(() => []);
-      const summaryBySessionId = new Map<string, SessionSummary>();
-      for (const sm of summariesList) {
-        if (sm?.sessionId) summaryBySessionId.set(sm.sessionId, sm);
-      }
+      const summaryMap = new Map(
+        summaries.map((s) => [s.sessionId ?? (s as unknown as { id: string }).id, s]),
+      );
       const withSummary = filtered.map((s) => {
-        const sum = summaryBySessionId.get(s.id);
+        const sum = summaryMap.get(s.id);
         return sum ? { ...s, summary: sum } : s;
       });
-      return { status_code: 200, body: { sessions: withSummary } };
+      const rawLimit = Number(req.query_params?.["limit"]);
+      const limit =
+        Number.isFinite(rawLimit) && rawLimit > 0
+          ? Math.floor(rawLimit)
+          : undefined;
+      const result = limit ? withSummary.slice(0, limit) : withSummary;
+      return { status_code: 200, body: { sessions: result } };
     },
   );
   sdk.registerTrigger({
