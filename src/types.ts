@@ -43,6 +43,18 @@ export interface CommitLink {
   linkedAt: string;
 }
 
+export interface GraphExtracted {
+  extractedAt: string;
+  observationId?: string;
+  nodeCount?: number;
+  edgeCount?: number;
+}
+
+export interface SummaryPartial extends SessionSummary {
+  chunkIndex?: number;
+  cachedAt?: string;
+}
+
 // Immutable write-time provenance: which trust boundary the content
 // crossed, inherited by derived records.
 export interface Origin {

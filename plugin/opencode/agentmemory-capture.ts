@@ -1034,6 +1034,16 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
     // In-memory message transform hook: attaches volatile file enrichment context to the tail
     // of the latest user message in-memory without touching SQLite durable events or creating UI clutter.
     "experimental.chat.messages.transform": async (input, output) => {
+      // Type assertion: upstream @opencode-ai/plugin types omit runtime agent and small model flags (#1184)
+      const chatInput = input as OpenCodeChatTransformInput;
+      if (
+        chatInput?.agent === "title" ||
+        chatInput?.agent === "compaction" ||
+        chatInput?.small === true
+      ) {
+        return;
+      }
+
       const msgs = output?.messages;
       if (!Array.isArray(msgs) || msgs.length === 0) return;
 

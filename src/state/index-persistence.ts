@@ -466,9 +466,16 @@ export class IndexPersistence {
     const activeRegistry = await this.getRegistry();
     const obsoleteGenerations: string[] = [];
     const obsoleteShards: IndexShardManifest["shards"] = [];
+    const now = Date.now();
+    const gracePeriod =
+      this.options.sweepGracePeriodMs ?? SWEEP_GRACE_PERIOD_MS;
 
     for (const [genId, genInfo] of Object.entries(activeRegistry.generations)) {
       if (genInfo.type === type && genId !== generation) {
+        const createdAtMs = Date.parse(genInfo.createdAt);
+        if (!Number.isNaN(createdAtMs) && now - createdAtMs < gracePeriod) {
+          continue;
+        }
         obsoleteGenerations.push(genId);
         if (Array.isArray(genInfo.shardScopes)) {
           for (const scope of genInfo.shardScopes) {

@@ -105,17 +105,21 @@ export function registerObserveFunction(
             KV.sessions,
             payload.sessionId,
           );
-          if (
-            !session &&
-            typeof payload.project === "string" &&
-            payload.project.trim().length > 0 &&
-            typeof payload.cwd === "string" &&
-            payload.cwd.trim().length > 0
-          ) {
+          if (!session) {
+            const proj =
+              typeof payload.project === "string" && payload.project.trim().length > 0
+                ? payload.project.trim()
+                : "default";
+            const cwd =
+              typeof payload.cwd === "string" && payload.cwd.trim().length > 0
+                ? payload.cwd.trim()
+                : (typeof process !== "undefined" && typeof process.cwd === "function"
+                    ? process.cwd()
+                    : ".");
             session = {
               id: payload.sessionId,
-              project: payload.project,
-              cwd: payload.cwd,
+              project: proj,
+              cwd,
               startedAt: payload.timestamp,
               status: "active",
               observationCount: 0,
