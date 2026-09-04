@@ -197,6 +197,50 @@ describe("slots — primitive", () => {
     expect(rendered).toContain("## persona");
     expect(rendered).toContain("senior eng");
   });
+
+  it("isolates project-scoped slots by project and shadows global slots per project (Issue #1108)", async () => {
+    // 1. Create a project slot in project-A
+    const createA = (await handlers["mem::slot-create"]({
+      label: "project_notes",
+      content: "notes for project A",
+      scope: "project",
+      project: "project-A",
+    })) as { success: boolean };
+    expect(createA.success).toBe(true);
+
+    // 2. Fetch slot from project-B -> should NOT find project-A's slot!
+    const fetchB = (await handlers["mem::slot-get"]({
+      label: "project_notes",
+      project: "project-B",
+    })) as { success: boolean; slot: unknown };
+    expect(fetchB.success).toBe(false);
+
+    // 3. Fetch slot from project-A -> should find project-A's slot
+    const fetchA = (await handlers["mem::slot-get"]({
+      label: "project_notes",
+      project: "project-A",
+    })) as { success: boolean; slot: { content: string } };
+    expect(fetchA.success).toBe(true);
+    expect(fetchA.slot.content).toBe("notes for project A");
+
+    // 4. Listing slots for project-B should NOT contain project_notes from project-A
+    const listB = (await handlers["mem::slot-list"]({ project: "project-B" })) as {
+      success: boolean;
+      slots: Array<{ label: string }>;
+    };
+    expect(listB.slots.some((s) => s.label === "project_notes")).toBe(false);
+
+    // 5. listPinnedSlots with project parameter should isolate pinned project slots
+    await handlers["mem::slot-replace"]({
+      label: "project_context",
+      content: "Monolith backend files",
+      project: "Monolith",
+    });
+    const pinnedDaily = await listPinnedSlots(kv as never, "daily");
+    expect(pinnedDaily.some((s) => s.content.includes("Monolith backend files"))).toBe(false);
+    const pinnedMonolith = await listPinnedSlots(kv as never, "Monolith");
+    expect(pinnedMonolith.some((s) => s.content.includes("Monolith backend files"))).toBe(true);
+  });
 });
 
 describe("slots — reflect", () => {

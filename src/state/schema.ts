@@ -69,6 +69,7 @@ export const KV = {
   imageRefs: "mem:image-refs",
   imageEmbeddings: "mem:image-embeddings",
   slots: "mem:slots",
+  projectSlots: (project: string) => `mem:slots:${project}`,
   globalSlots: "mem:slots:global",
   state: "mem:state",
   commits: "mem:commits",
