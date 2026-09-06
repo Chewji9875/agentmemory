@@ -167,6 +167,58 @@ describe("Consolidation Pipeline", () => {
     expect(stored[0].confidence).toBe(0.9);
   });
 
+  it("filters summaries by project when project is supplied", async () => {
+    const provider = {
+      name: "test",
+      compress: vi.fn(),
+      summarize: vi.fn().mockResolvedValue(
+        `<facts><fact confidence="0.9">Project Alpha uses Rust</fact></facts>`,
+      ),
+    };
+    registerConsolidationPipelineFunction(sdk as never, kv as never, provider as never);
+
+    for (let i = 0; i < 5; i++) {
+      await kv.set("mem:summaries", `ses_alpha_${i}`, {
+        ...makeSummary(i),
+        sessionId: `ses_alpha_${i}`,
+        project: "proj-alpha",
+        title: `Alpha ${i}`,
+      });
+    }
+
+    for (let i = 0; i < 3; i++) {
+      await kv.set("mem:summaries", `ses_beta_${i}`, {
+        ...makeSummary(i + 10),
+        sessionId: `ses_beta_${i}`,
+        project: "proj-beta",
+        title: `Beta ${i}`,
+      });
+    }
+
+    const betaResult = (await sdk.trigger("mem::consolidate-pipeline", {
+      tier: "semantic",
+      project: "proj-beta",
+    })) as { success: boolean; results: Record<string, unknown> };
+
+    expect(betaResult.success).toBe(true);
+    const betaSemantic = betaResult.results.semantic as { skipped: boolean; reason: string };
+    expect(betaSemantic.skipped).toBe(true);
+    expect(betaSemantic.reason).toContain("fewer than 5");
+
+    const alphaResult = (await sdk.trigger("mem::consolidate-pipeline", {
+      tier: "semantic",
+      project: "proj-alpha",
+    })) as { success: boolean; results: Record<string, unknown> };
+
+    expect(alphaResult.success).toBe(true);
+    const alphaSemantic = alphaResult.results.semantic as { newFacts: number };
+    expect(alphaSemantic.newFacts).toBe(1);
+
+    const stored = await kv.list<SemanticMemory>("mem:semantic");
+    expect(stored.length).toBe(1);
+    expect(stored[0].fact).toBe("Project Alpha uses Rust");
+  });
+
   it("with enough patterns, creates procedural memories from provider response", async () => {
     const provider = {
       name: "test",
