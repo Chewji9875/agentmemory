@@ -17,7 +17,7 @@ describe("Live Verification: 5 Key Fixes for Agentmemory OpenCode Plugin", () =>
         };
       }
       if (url.includes("/enrich")) {
-        const isProjectA = body.project === "agentmemory";
+        const isProjectA = body.project === "github.com-rohitg00-agentmemory" || body.project === "agentmemory";
         const hasScopedFile = (body.files || []).some((f: string) => f.includes("scoped-file.ts"));
         const hasAuthFile = (body.files || []).some((f: string) => f.includes("auth.ts"));
         let context = "";
@@ -235,8 +235,8 @@ describe("Live Verification: 5 Key Fixes for Agentmemory OpenCode Plugin", () =>
     const enrichCall = capturedRequests.find(r => r.url.includes("/enrich"));
     expect(enrichCall).toBeDefined();
 
-    // Verification 5A: Payload explicitly specifies project name
-    expect(enrichCall?.body.project).toBe("agentmemory");
+    // Verification 5A: Payload explicitly specifies canonical project key
+    expect(enrichCall?.body.project).toBe("github.com-rohitg00-agentmemory");
 
     // Verification 5B: Injected context contains Project A secret and excludes Project B
     expect(msgs.messages[0].parts[0].text).toContain("PROJECT_A_SECRET: 11111");

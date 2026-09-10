@@ -17,6 +17,7 @@ import {
 } from "../prompts/consolidation.js";
 import { withKeyedLock } from "../state/keyed-mutex.js";
 import { getConsolidationDecayDays, isConsolidationEnabled } from "../config.js";
+import { healLegacyProjects } from "./consolidate.js";
 import { logger } from "../logger.js";
 
 // Corpus-level dedup guard for the semantic merge tier. Stored in KV.config
@@ -66,7 +67,12 @@ export function registerConsolidationPipelineFunction(
   provider: MemoryProvider,
 ): void {
   sdk.registerFunction("mem::consolidate-pipeline", 
-    async (data?: { tier?: string; force?: boolean; project?: string }) => {
+    async (data?: {
+      tier?: string;
+      force?: boolean;
+      project?: string;
+      project_display_name?: string;
+    }) => {
       // Serialize pipeline invocations in-process so concurrent triggers
       // (session-stop fan-out, 2h timer, REST trigger, eviction recovery)
       // cannot interleave two full-corpus passes on the same corpus.
@@ -108,6 +114,17 @@ export function registerConsolidationPipelineFunction(
         details: { tier, project: data?.project, status: "started" },
       };
       await kv.set(KV.audit, auditId, auditEntry);
+
+      if (data?.project) {
+        const healed = await healLegacyProjects(kv, data.project, {
+          legacyNames: data.project_display_name?.trim()
+            ? [data.project_display_name.trim()]
+            : undefined,
+        });
+        if (healed.healedMemories > 0 || healed.healedLessons > 0 || healed.healedSessions > 0) {
+          results.healed = healed;
+        }
+      }
 
       if (tier === "all" || tier === "semantic") {
         let summaries = await kv.list<SessionSummary>(KV.summaries);
@@ -217,6 +234,7 @@ export function registerConsolidationPipelineFunction(
           const reflectResult = await sdk.trigger({ function_id: "mem::reflect", payload: {
             maxClusters: 10,
             project: data?.project,
+            project_display_name: data?.project_display_name,
           } });
           results.reflect = reflectResult;
         } catch (err) {

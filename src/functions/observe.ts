@@ -55,7 +55,7 @@ export function registerObserveFunction(
   sdk: ISdk,
   kv: StateKV,
   dedupMap?: DedupMap,
-  maxObservationsPerSession?: number,
+  _maxObservationsPerSession?: number,
 ): void {
   sdk.registerFunction("mem::observe", 
     async (payload: HookPayload) => {
@@ -323,16 +323,6 @@ export function registerObserveFunction(
       const pendingImageData = extractedImage;
 
       return withKeyedLock(`obs:${payload.sessionId}`, async () => {
-        if (maxObservationsPerSession && maxObservationsPerSession > 0) {
-          const existing = await kv.list(KV.observations(payload.sessionId));
-          if (existing.length >= maxObservationsPerSession) {
-            return {
-              success: false,
-              error: `Session observation limit reached (${maxObservationsPerSession})`,
-            };
-          }
-        }
-
         // Existing session is the source of truth for agentId (even
         // undefined). Env AGENT_ID only fires when no session row
         // exists yet — otherwise an unscoped session would get
@@ -340,6 +330,8 @@ export function registerObserveFunction(
         const existingSession = await kv.get<{
           agentId?: string;
           observationCount?: number;
+          uncompactedCount?: number;
+          compactedWatermark?: number;
           firstPrompt?: string;
         }>(KV.sessions, payload.sessionId);
         const inheritedAgentId = existingSession
@@ -425,12 +417,19 @@ export function registerObserveFunction(
 
         const session = existingSession;
         if (session) {
+          const nextObsCount = (session.observationCount || 0) + 1;
+          const nextUncompactedCount = (session.uncompactedCount || 0) + 1;
           const updates: Array<{ type: "set"; path: string; value: unknown }> = [
-            { type: "set", path: "updatedAt", value: new Date().toISOString() },
+            { type: "set", path: "updatedAt", value: raw.timestamp },
             {
               type: "set",
               path: "observationCount",
-              value: (session.observationCount || 0) + 1,
+              value: nextObsCount,
+            },
+            {
+              type: "set",
+              path: "uncompactedCount",
+              value: nextUncompactedCount,
             },
           ];
           if (!session.firstPrompt && typeof raw.userPrompt === "string") {
@@ -444,6 +443,14 @@ export function registerObserveFunction(
             }
           }
           await kv.update(KV.sessions, payload.sessionId, updates);
+
+          if (nextUncompactedCount >= 200) {
+            sdk.trigger({
+              function_id: "mem::micro-compact",
+              payload: { sessionId: payload.sessionId },
+              action: TriggerAction.Void(),
+            });
+          }
         } else if (
           typeof payload.project === "string" &&
           payload.project.trim().length > 0 &&
@@ -471,6 +478,14 @@ export function registerObserveFunction(
             updatedAt: ts,
             status: "active",
             observationCount: 1,
+            uncompactedCount: 1,
+            compactedWatermark: 0,
+            ...(payload.project_display_name
+              ? { projectDisplayName: payload.project_display_name }
+              : {}),
+            ...((payload.data as any)?.subpackage
+              ? { subpackage: (payload.data as any).subpackage }
+              : {}),
             ...(inheritedAgentId ? { agentId: inheritedAgentId } : {}),
             ...(trimmedPrompt && trimmedPrompt.length > 0
               ? { firstPrompt: trimmedPrompt }

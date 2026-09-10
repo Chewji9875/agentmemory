@@ -13,6 +13,7 @@ import type {
 } from "../types.js";
 import { recordAudit } from "./audit.js";
 import { REFLECT_SYSTEM, buildReflectPrompt } from "../prompts/reflect.js";
+import { healLegacyProjects, resolveLegacyProjectNames } from "./consolidate.js";
 
 export const INSIGHT_MAX_SOURCE_IDS = 20;
 export const MAX_CONCEPTS_PER_CLUSTER = 15;
@@ -184,10 +185,32 @@ export function registerReflectFunctions(
   provider: MemoryProvider,
 ): void {
   sdk.registerFunction("mem::reflect", 
-    async (data: { maxClusters?: number; project?: string }) => {
+    async (data: {
+      maxClusters?: number;
+      project?: string;
+      project_display_name?: string;
+    }) => {
       const maxClusters = Math.min(data?.maxClusters ?? 10, 20);
       const maxInsightsPerCluster = 5;
       const maxTotal = 50;
+
+      const legacyNames = data?.project
+        ? await resolveLegacyProjectNames(
+            kv,
+            data.project,
+            data.project_display_name?.trim()
+              ? [data.project_display_name.trim()]
+              : [],
+          )
+        : new Set<string>();
+      const projectNames = data?.project
+        ? new Set([data.project, ...legacyNames])
+        : undefined;
+      const healed = data?.project
+        ? await healLegacyProjects(kv, data.project, {
+            legacyNames: [...legacyNames],
+          })
+        : undefined;
 
       const [graphNodes, graphEdges, semanticMemories, lessons, crystals] =
         await Promise.all([
@@ -199,12 +222,14 @@ export function registerReflectFunctions(
         ]);
 
       let activeLessons = lessons.filter((l) => !l.deleted);
-      if (data?.project) {
-        activeLessons = activeLessons.filter((l) => l.project === data.project);
+      if (projectNames) {
+        activeLessons = activeLessons.filter((l) =>
+          projectNames.has(l.project ?? ""),
+        );
       }
 
       let activeCrystals = crystals.filter(
-        (c) => !data?.project || c.project === data.project,
+        (c) => !projectNames || projectNames.has(c.project ?? ""),
       );
       activeCrystals.sort(
         (a, b) =>
@@ -215,7 +240,9 @@ export function registerReflectFunctions(
       if (data?.project) {
         const sessions = await kv.list<Session>(KV.sessions).catch(() => []);
         const projectSessionIds = new Set(
-          sessions.filter((s) => s.project === data.project).map((s) => s.id),
+          sessions
+            .filter((s) => !projectNames || projectNames.has(s.project))
+            .map((s) => s.id),
         );
         activeSemantic = semanticMemories.filter((s) =>
           (s.sourceSessionIds || []).some((id) => projectSessionIds.has(id)),
@@ -404,6 +431,7 @@ export function registerReflectFunctions(
           clustersProcessed: conceptClusters.length - clustersSkipped,
           clustersSkipped,
           usedFallback,
+          healed,
         });
       } catch {}
 
@@ -414,6 +442,7 @@ export function registerReflectFunctions(
         clustersProcessed: conceptClusters.length - clustersSkipped,
         clustersSkipped,
         usedFallback,
+        ...(healed ? { healed } : {}),
       };
     },
   );

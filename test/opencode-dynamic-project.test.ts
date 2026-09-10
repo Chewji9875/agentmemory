@@ -61,7 +61,8 @@ describe("OpenCode plugin dynamic project detection", () => {
     expect(observeCalls.length).toBeGreaterThan(0);
 
     const lastObserve = JSON.parse(observeCalls[observeCalls.length - 1][1].body);
-    expect(lastObserve.project).toBe("agentmemory");
+    expect(lastObserve.project).toBe("github.com-rohitg00-agentmemory");
+    expect(lastObserve.project_display_name).toBe("agentmemory");
     expect(lastObserve.cwd).toBe(process.cwd());
   });
 
@@ -108,6 +109,7 @@ describe("OpenCode plugin dynamic project detection", () => {
     expect(observeCalls.length).toBeGreaterThan(0);
 
     const lastObserve = JSON.parse(observeCalls[observeCalls.length - 1][1].body);
-    expect(lastObserve.project).toBe("agentmemory");
+    expect(lastObserve.project).toBe("github.com-rohitg00-agentmemory");
+    expect(lastObserve.project_display_name).toBe("agentmemory");
   });
 });

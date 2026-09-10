@@ -513,8 +513,9 @@ describe("OpenCode plugin remediation test suite (#1184, #720, #1188)", () => {
       expect(startCall).toBeDefined();
       const body = JSON.parse(startCall[1].body);
 
-      // Verify that the project name resolved to the git repo "agentmemory" and NOT "Resources" or "OpenCode.app"
-      expect(body.project).toBe("agentmemory");
+      // Verify that the project key resolved to the canonical remote slug of the git repo
+      // "github.com-rohitg00-agentmemory" and NOT the .app bundle basename
+      expect(body.project).toBe("github.com-rohitg00-agentmemory");
       expect(body.cwd).toContain("agentmemory");
     });
 
@@ -571,7 +572,7 @@ describe("OpenCode plugin remediation test suite (#1184, #720, #1188)", () => {
       );
       expect(startCall).toBeDefined();
       const body = JSON.parse(startCall[1].body);
-      expect(body.project).toBe("my-non-git-workspace");
+      expect(body.project).toBe("my-non-git-workspace-507c76eb");
       expect(body.cwd).toBe("/tmp/my-non-git-workspace");
     });
   });

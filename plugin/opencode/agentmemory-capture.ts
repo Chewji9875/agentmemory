@@ -1,7 +1,8 @@
 import type { Plugin } from "@opencode-ai/plugin";
 import { execFileSync } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
-import { basename, dirname } from "node:path";
+import { createHash } from "node:crypto";
+import { existsSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, relative, resolve } from "node:path";
 
 const API = process.env.AGENTMEMORY_URL || "http://localhost:3111";
 // OpenCode reports tool names in lowercase ("read", "edit", ...); matching is
@@ -54,12 +55,15 @@ async function observe(
   data: Record<string, unknown>,
 ): Promise<void> {
   const proj = projectFor(sessionId);
+  const identity = resolveWorkspaceIdentity(proj.cwd);
   await post("/observe", {
     hookType,
     sessionId,
-    project: proj.name,
+    project: identity.projectKey,
+    project_display_name: identity.displayName,
     cwd: proj.cwd,
     timestamp: new Date().toISOString(),
+    ...(identity.subpath ? { subpackage: identity.subpath } : {}),
     data,
   });
 }
@@ -98,13 +102,84 @@ function resolveCandidateDir(...candidates: (string | undefined | null)[]): stri
   return process.cwd() || "/";
 }
 
-const projectNameCache = new Map<string, string>();
-
 function resolveProjectName(dir: string): string {
-  const explicit = process.env.AGENTMEMORY_PROJECT_NAME?.trim();
-  if (explicit) return explicit;
-  const cached = projectNameCache.get(dir);
-  if (cached !== undefined) return cached;
+  return resolveWorkspaceIdentity(dir).projectKey;
+}
+
+export interface WorkspaceIdentity {
+  projectKey: string;
+  displayName: string;
+  rootPath: string;
+  subpath?: string;
+}
+
+const identityCache = new Map<string, WorkspaceIdentity>();
+
+function gitConfig(dir: string, key: string): string {
+  try {
+    return execFileSync("git", ["config", "--get", key], {
+      cwd: dir,
+      stdio: ["ignore", "pipe", "ignore"],
+      encoding: "utf8",
+      timeout: 1000,
+    }).trim();
+  } catch {
+    return "";
+  }
+}
+
+function parseRemoteSlug(url: string): string {
+  let cleaned = url.trim();
+  if (cleaned.endsWith(".git")) {
+    cleaned = cleaned.slice(0, -4);
+  }
+  cleaned = cleaned.replace(/^(https?|git|ssh):\/\//, "");
+  if (cleaned.includes("@")) {
+    cleaned = cleaned.split("@")[1];
+  }
+  cleaned = cleaned.replace(/^([^/:]+):\d+\//, "$1/");
+  cleaned = cleaned.replace(/:/g, "/");
+
+  const segments = cleaned
+    .split("/")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  if (segments.length === 0) return "unknown";
+
+  const host = segments[0].toLowerCase();
+  const rest = segments.slice(1).join("-").toLowerCase();
+
+  const combined = rest ? `${host}-${rest}` : host;
+  return combined.replace(/[^a-z0-9.-]/gi, "-").replace(/-+/g, "-");
+}
+
+function resolveWorkspaceIdentity(cwd?: string): WorkspaceIdentity {
+  const explicit = process.env["AGENTMEMORY_PROJECT_NAME"];
+  const rawDir = cwd && cwd.trim() ? resolve(cwd.trim()) : process.cwd();
+
+  if (explicit && explicit.trim()) {
+    const name = explicit.trim();
+    return {
+      projectKey: name,
+      displayName: name,
+      rootPath: rawDir,
+    };
+  }
+
+  let dir = rawDir;
+  try {
+    dir = realpathSync(rawDir);
+  } catch {}
+
+  const cached = identityCache.get(dir);
+  if (cached) return cached;
+
+  let rootPath = dir;
+  let displayName = basename(dir);
+  let subpath: string | undefined;
+  let remoteUrl: string | undefined;
+
   try {
     const top = execFileSync("git", ["rev-parse", "--show-toplevel"], {
       cwd: dir,
@@ -112,17 +187,47 @@ function resolveProjectName(dir: string): string {
       encoding: "utf8",
       timeout: 1000,
     }).trim();
+
     if (top) {
-      const name = basename(top);
-      projectNameCache.set(dir, name);
-      return name;
+      let resolvedTop = top;
+      try {
+        resolvedTop = realpathSync(top);
+      } catch {}
+
+      rootPath = resolvedTop;
+      displayName = basename(resolvedTop);
+
+      if (dir !== resolvedTop) {
+        const rel = relative(resolvedTop, dir).replace(/\\/g, "/");
+        if (rel && rel !== ".") {
+          subpath = rel;
+        }
+      }
+
+      remoteUrl = gitConfig(dir, "remote.upstream.url") || gitConfig(dir, "remote.origin.url");
     }
   } catch {
     // not a git repo, fall through
   }
-  const fallback = basename(dir) || dir || "default";
-  projectNameCache.set(dir, fallback);
-  return fallback;
+
+  let projectKey: string;
+  if (remoteUrl) {
+    projectKey = parseRemoteSlug(remoteUrl);
+  } else {
+    const hash = createHash("sha256").update(rootPath).digest("hex").slice(0, 8);
+    projectKey = `${displayName.toLowerCase()}-${hash}`;
+  }
+
+  const identity: WorkspaceIdentity = {
+    projectKey,
+    displayName,
+    rootPath,
+    subpath,
+  };
+
+  identityCache.set(dir, identity);
+  identityCache.set(rawDir, identity);
+  return identity;
 }
 
 function inferProjectFromPath(targetPath: string): { cwd: string; name: string } | null {
@@ -519,13 +624,15 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
           process.cwd(),
         );
         const proj = { cwd: sessionDir, name: resolveProjectName(sessionDir) };
+        const sessionIdentity = resolveWorkspaceIdentity(sessionDir);
         sessionProjects.set(sessionId, proj);
         const startResult = await postJson("/session/start", {
           sessionId,
           title: info?.title ?? null,
           parentID: info?.parentID ?? null,
           version: info?.version ?? null,
-          project: proj.name,
+          project: sessionIdentity.projectKey,
+          project_display_name: sessionIdentity.displayName,
           cwd: proj.cwd,
         });
         // cache the context returned at session/start so the
@@ -1012,9 +1119,11 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
       // Identical bytes per turn preserve LLM prefix cache (#720) across all regular chat steps.
       let ctx = startContextCache.get(sid);
       if (typeof ctx !== "string") {
+        const sidIdentity = resolveWorkspaceIdentity(projectFor(sid).cwd);
         const result = await postJson("/context", {
           sessionId: sid,
-          project: projectFor(sid).name,
+          project: sidIdentity.projectKey,
+          project_display_name: sidIdentity.displayName,
         });
         ctx = (result as OpenCodeContextResponse)?.context;
         if (typeof ctx === "string") {
@@ -1059,13 +1168,14 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
       for (const f of stashedFileList) stash.delete(f);
 
       const proj = projectFor(sid);
+      const enrichIdentity = resolveWorkspaceIdentity(proj.cwd);
       try {
         const enrichResult = await postJson(
           "/enrich",
           {
             sessionId: sid,
             files: stashedFileList,
-            project: proj.name,
+            project: enrichIdentity.projectKey,
             toolName: "enrich_inject",
           },
           3000,
@@ -1089,7 +1199,8 @@ export const AgentmemoryCapturePlugin: Plugin = async (ctx) => {
 
       const result = await postJson("/context", {
         sessionId: sid,
-        project: projectFor(sid).name,
+        project: resolveWorkspaceIdentity(projectFor(sid).cwd).projectKey,
+        project_display_name: resolveWorkspaceIdentity(projectFor(sid).cwd).displayName,
       });
       const ctx = (result as any)?.context;
       if (typeof ctx === "string" && ctx.length > 0) {

@@ -190,7 +190,7 @@ describe("OpenCode plugin project name resolution", () => {
 
   async function startPayloadFor(
     ctx: Record<string, unknown>,
-  ): Promise<{ project: unknown; cwd: unknown }> {
+  ): Promise<{ project: unknown; project_display_name: unknown; cwd: unknown }> {
     const { AgentmemoryCapturePlugin } = await import(
       "../plugin/opencode/agentmemory-capture.ts"
     );
@@ -205,7 +205,7 @@ describe("OpenCode plugin project name resolution", () => {
     );
     if (!startCall) throw new Error("no /session/start call captured");
     const body = JSON.parse((startCall[1] as { body: string }).body);
-    return { project: body.project, cwd: body.cwd };
+    return { project: body.project, project_display_name: body.project_display_name, cwd: body.cwd };
   }
 
   async function projectFor(ctx: Record<string, unknown>): Promise<unknown> {
@@ -217,26 +217,28 @@ describe("OpenCode plugin project name resolution", () => {
     expect(await projectFor({ worktree: "/should/be/ignored" })).toBe("my-proj");
   });
 
-  it("treats whitespace-only env value as unset and falls back to the basename", async () => {
+  it("treats whitespace-only env value as unset and falls back to the local slug", async () => {
     process.env.AGENTMEMORY_PROJECT_NAME = "   ";
-    expect(await projectFor({ worktree: "/repo/alpha" })).toBe("alpha");
+    expect(await projectFor({ worktree: "/repo/alpha" })).toMatch(/^alpha-[a-f0-9]{8}$/);
   });
 
-  // Canonicalization: project is the git-toplevel/cwd BASENAME (matching the
-  // hooks' resolveProject), while cwd keeps the full path. A nonexistent dir
-  // cannot be a git repo, so these exercise the basename fallback.
-  it("sends the basename as project and the full path as cwd", async () => {
-    const payload = await startPayloadFor({ worktree: "/repo/alpha" });
-    expect(payload.project).toBe("alpha");
+  it("sends the canonical project key, display name, and full path as cwd", async () => {
+    const payload = (await startPayloadFor({ worktree: "/repo/alpha" })) as {
+      project: unknown;
+      project_display_name: unknown;
+      cwd: unknown;
+    };
+    expect(payload.project).toMatch(/^alpha-[a-f0-9]{8}$/);
+    expect(payload.project_display_name).toBe("alpha");
     expect(payload.cwd).toBe("/repo/alpha");
   });
 
   it("falls back to ctx.project.id when worktree is absent", async () => {
-    expect(await projectFor({ project: { id: "/repo/beta" } })).toBe("beta");
+    expect(await projectFor({ project: { id: "/repo/beta" } })).toMatch(/^beta-[a-f0-9]{8}$/);
   });
 
-  it("resolves the git toplevel basename inside a real repository", async () => {
-    const { mkdtempSync, mkdirSync, rmSync } = await import("node:fs");
+  it("resolves the git toplevel local slug inside a real repository", async () => {
+    const { mkdtempSync, mkdirSync, rmSync, realpathSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
     const { execFileSync } = await import("node:child_process");
@@ -246,8 +248,12 @@ describe("OpenCode plugin project name resolution", () => {
     mkdirSync(nested, { recursive: true });
     execFileSync("git", ["init", "--quiet"], { cwd: repo, stdio: "ignore" });
     try {
-      // Subdirectory of the repo still resolves to the repo basename.
-      expect(await projectFor({ worktree: nested })).toBe("oc-fixture-repo");
+      // Subdirectory of a remote-less repo still resolves to the repo's
+      // deterministic local slug anchored at the git toplevel realpath.
+      const realRepo = realpathSync(repo);
+      expect(await projectFor({ worktree: nested })).toBe(
+        `oc-fixture-repo-${(await import("node:crypto")).createHash("sha256").update(realRepo).digest("hex").slice(0, 8)}`,
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

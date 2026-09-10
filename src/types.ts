@@ -21,6 +21,10 @@ export interface Session {
   endedAt?: string;
   status: "active" | "completed" | "abandoned";
   observationCount: number;
+  uncompactedCount?: number;
+  compactedWatermark?: number;
+  projectDisplayName?: string;
+  subpackage?: string;
   model?: string;
   tags?: string[];
   firstPrompt?: string;
@@ -226,6 +230,7 @@ export interface HookPayload {
   hookType: HookType;
   sessionId: string;
   project: string;
+  project_display_name?: string;
   cwd: string;
   timestamp: string;
   data: unknown;
@@ -697,6 +702,7 @@ export interface AuditEntry {
     | "core_add"
     | "core_remove"
     | "auto_page"
+    | "micro_compact"
     | "vision_embed"
     | "slot_append"
     | "slot_replace"

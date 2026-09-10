@@ -621,6 +621,7 @@ export function registerApiTriggers(
           ? body.agentId.trim().slice(0, 128)
           : undefined;
       const agentId = requestAgentId ?? getAgentId();
+      const projectDisplayName = asNonEmptyString(body.project_display_name);
       const session: Session = {
         id: sessionId,
         project,
@@ -628,17 +629,25 @@ export function registerApiTriggers(
         startedAt: new Date().toISOString(),
         status: "active",
         observationCount: 0,
+        uncompactedCount: 0,
+        compactedWatermark: 0,
+        ...(projectDisplayName ? { projectDisplayName } : {}),
         ...(title ? { summary: title.slice(0, 200) } : {}),
         ...(title ? { firstPrompt: title.slice(0, 200) } : {}),
         ...(agentId ? { agentId } : {}),
       };
       await kv.set(KV.sessions, sessionId, session);
       const contextResult = await sdk.trigger<
-        { sessionId: string; project: string; agentId?: string },
+        { sessionId: string; project: string; project_display_name?: string; agentId?: string },
         { context: string }
       >({
         function_id: "mem::context",
-        payload: { sessionId, project, ...(agentId ? { agentId } : {}) },
+        payload: {
+          sessionId,
+          project,
+          ...(projectDisplayName ? { project_display_name: projectDisplayName } : {}),
+          ...(agentId ? { agentId } : {}),
+        },
       });
       return {
         status_code: 200,
