@@ -7,9 +7,9 @@
 
 **Blocked by:** 01 — Workspace Identity Resolver
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] `src/hooks/_project.ts` and `session-start.ts` integrate the Workspace Identity resolver.
-- [ ] `plugin/opencode/agentmemory-capture.ts` updates session project and observation payloads to use `identity.projectKey` and `identity.displayName`.
-- [ ] Working inside a nested directory of a Git repository records `subpackage` metadata tag on episodic observations while keeping root `project_key`.
-- [ ] Verifies via end-to-end integration tests that hook payloads are dispatched with the correct canonical key and metadata.
+- [x] `src/hooks/_project.ts` and `session-start.ts` integrate the Workspace Identity resolver.
+- [x] `plugin/opencode/agentmemory-capture.ts` updates session project and observation payloads to use `identity.projectKey` and `identity.displayName`.
+- [x] Working inside a nested directory of a Git repository records `subpackage` metadata tag on episodic observations while keeping root `project_key`.
+- [x] Verifies via end-to-end integration tests that hook payloads are dispatched with the correct canonical key and metadata.

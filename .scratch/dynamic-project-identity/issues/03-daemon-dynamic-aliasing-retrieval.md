@@ -7,8 +7,8 @@
 
 **Blocked by:** 01 — Workspace Identity Resolver
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] `mem::context` implements dual-lookup: queries by `project_key`, falls back to `project_display_name` if legacy records exist.
-- [ ] Memory and lesson recall functions query canonical `project_key` with fallback to `project_display_name`.
-- [ ] Verification tests confirm that memories created with legacy project names (`Monolith`) are recalled successfully when querying with the new `project_key` (`github.com-myorg-monolith`).
+- [x] `mem::context` implements dual-lookup: queries by `project_key`, falls back to `project_display_name` if legacy records exist.
+- [x] Memory and lesson recall functions query canonical `project_key` with fallback to `project_display_name`.
+- [x] Verification tests confirm that memories created with legacy project names (`Monolith`) are recalled successfully when querying with the new `project_key` (`github.com-myorg-monolith`).

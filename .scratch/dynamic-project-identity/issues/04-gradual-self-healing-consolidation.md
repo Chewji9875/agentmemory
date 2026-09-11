@@ -7,8 +7,8 @@
 
 **Blocked by:** 02 — Client Hooks and Monorepo Subpackage Tagging, 03 — Daemon Dynamic Aliasing Retrieval
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] `mem::consolidate` inspects memories matching `project_display_name` and updates their project field to `project_key`.
-- [ ] `mem::reflect` includes legacy records in concept clustering and outputs synthesized insights tagged with `project_key`.
-- [ ] End-to-end test confirms that legacy records are gracefully migrated to the canonical `project_key` after consolidation.
+- [x] `mem::consolidate` inspects memories matching `project_display_name` and updates their project field to `project_key`.
+- [x] `mem::reflect` includes legacy records in concept clustering and outputs synthesized insights tagged with `project_key`.
+- [x] End-to-end test confirms that legacy records are gracefully migrated to the canonical `project_key` after consolidation.

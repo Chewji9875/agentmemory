@@ -6,11 +6,11 @@ When a repository has Git remotes, it extracts a host-qualified slug (`host-owne
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] Resolves `upstream` Git remote over `origin` into `host-owner-repo` format across SSH (`git@...`), HTTPS, and SSH alias URL variants.
-- [ ] Resolves `origin` Git remote into `host-owner-repo` when `upstream` is absent.
-- [ ] Derives deterministic, non-conflicting Local Repository Slugs from `realpath` when no Git remote exists or when outside a Git repository.
-- [ ] Resolves identical `project_key` across different Git worktrees belonging to the same repository.
-- [ ] Memoizes resolution results in an in-memory Map by directory path to eliminate repeated Git process spawning.
-- [ ] Respects explicit `AGENTMEMORY_PROJECT_NAME` override if provided.
+- [x] Resolves `upstream` Git remote over `origin` into `host-owner-repo` format across SSH (`git@...`), HTTPS, and SSH alias URL variants.
+- [x] Resolves `origin` Git remote into `host-owner-repo` when `upstream` is absent.
+- [x] Derives deterministic, non-conflicting Local Repository Slugs from `realpath` when no Git remote exists or when outside a Git repository.
+- [x] Resolves identical `project_key` across different Git worktrees belonging to the same repository.
+- [x] Memoizes resolution results in an in-memory Map by directory path to eliminate repeated Git process spawning.
+- [x] Respects explicit `AGENTMEMORY_PROJECT_NAME` override if provided.

@@ -7,9 +7,9 @@
 
 **Blocked by:** 02 — Client Hooks and Monorepo Subpackage Tagging
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] Dashboard displays `project_display_name` prominently while maintaining `project_key` for unique grouping.
-- [ ] Multiple workspaces with the same folder name (`Monolith`) render as separate, disambiguated workspace streams.
-- [ ] Project filter dropdown in the dashboard correctly filters by canonical `project_key` without namespace collision.
-- [ ] End-to-end viewer host test verifies that sessions from distinct paths with identical folder names are partitioned correctly.
+- [x] Dashboard displays `project_display_name` prominently while maintaining `project_key` for unique grouping.
+- [x] Multiple workspaces with the same folder name (`Monolith`) render as separate, disambiguated workspace streams.
+- [x] Project filter dropdown in the dashboard correctly filters by canonical `project_key` without namespace collision.
+- [x] End-to-end viewer host test verifies that sessions from distinct paths with identical folder names are partitioned correctly.
